@@ -722,15 +722,11 @@ fun InteractiveFloatingCanvasWorkspace(
                                     components.forEach { comp ->
                                         CanvasElementView(
                                             component = comp,
-                                            isSelected = comp.id == selectedComponentId && !isLivePreviewMode,
-                                            isLivePreviewMode = isLivePreviewMode,
+                                            isSelected = comp.id == selectedComponentId,
+                                            isLivePreviewMode = false,
                                             isAutoFixSize = isAutoFixSize,
                                             onTapElement = {
-                                                if (isLivePreviewMode) {
-                                                    onTriggerComponentLive(comp, null)
-                                                } else {
-                                                    onSelectComponent(comp.id)
-                                                }
+                                                onSelectComponent(comp.id)
                                             },
                                             onToggleOnOffDirect = {
                                                 onSelectComponent(comp.id)
@@ -1172,12 +1168,12 @@ private fun CanvasElementView(
 
             ComponentWidgetType.BUTTON.name -> {
                 // Classic Button design (turns Green when ON, with STATE: ON / STATE: OFF removed)
+                // Tapping the button selects it to open the bottom Edit Dock; tapping the ON/OFF badge toggles state + selects!
                 val activeBtnBg = if (isCheckedOn) Color(0xFF00C853) else bgColor
                 Row(
                     modifier = Modifier
                         .fillMaxSize()
                         .background(activeBtnBg)
-                        .clickable { onToggleState() }
                         .padding(horizontal = 10.dp, vertical = 4.dp),
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.SpaceBetween
@@ -1195,6 +1191,7 @@ private fun CanvasElementView(
                     )
 
                     Surface(
+                        onClick = { onToggleState() },
                         color = if (isCheckedOn) Color(0xFF047857) else Color(0xFFEF4444),
                         shape = RoundedCornerShape(999.dp),
                         border = BorderStroke(1.dp, Color.White)

@@ -448,7 +448,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
      * Selecting an element opens the Bottom Property Editing Dock.
      */
     fun selectComponent(componentId: Long?) {
-        _uiState.update { it.copy(selectedComponentId = componentId) }
+        _uiState.update {
+            it.copy(
+                selectedComponentId = componentId,
+                isLivePreviewMode = false
+            )
+        }
     }
 
     fun updateComponent(updated: CanvasComponentEntity) {
@@ -773,9 +778,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         } else {
             _uiState.update {
                 it.copy(
-                    isLivePreviewMode = true,
-                    selectedComponentId = null,
-                    statusToast = "In-App Floating Preview active (${specs.size} items). Grant Overlay Permission for system-wide window."
+                    isLivePreviewMode = false,
+                    statusToast = "Please grant Overlay Permission to float window over other Android apps."
                 )
             }
         }
@@ -790,7 +794,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         } catch (_: Exception) {
         }
         _uiState.update {
-            it.copy(isSystemOverlayRunning = false)
+            it.copy(
+                isSystemOverlayRunning = false,
+                isLivePreviewMode = false,
+                statusToast = "Floating overlay stopped. Tap any widget to edit."
+            )
         }
     }
 

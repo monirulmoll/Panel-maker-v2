@@ -418,7 +418,7 @@ fun StudioCanvasBuilderScreen(
         },
         bottomBar = {
             AnimatedVisibility(
-                visible = selectedComponent != null && !uiState.isLivePreviewMode,
+                visible = selectedComponent != null,
                 enter = slideInVertically(initialOffsetY = { it }),
                 exit = slideOutVertically(targetOffsetY = { it })
             ) {
