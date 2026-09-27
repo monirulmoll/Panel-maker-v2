@@ -143,6 +143,8 @@ public class FloatingDashboardService extends Service {
         titleTv.setTextColor(Color.WHITE);
         titleTv.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13);
         titleTv.setTypeface(Typeface.DEFAULT_BOLD);
+        titleTv.setSingleLine(true);
+        titleTv.setEllipsize(android.text.TextUtils.TruncateAt.END);
         LinearLayout.LayoutParams titleLp = new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f);
         header.addView(titleTv, titleLp);
 
@@ -162,8 +164,38 @@ public class FloatingDashboardService extends Service {
         final int[] currentCanvasH = new int[]{dpToPx(DynamicOverlayRegistry.getActiveCanvasHeightDp())};
         LinearLayout.LayoutParams canvasLp = new LinearLayout.LayoutParams(currentCanvasW[0], currentCanvasH[0]);
 
-        ScrollView scrollView = new ScrollView(this);
-        scrollView.setFillViewport(true);
+        // Custom ScrollView:
+        // 1. Scroll is 0 (disabled) as long as all widgets fit inside the visible window.
+        // 2. Scroll turns ON automatically as soon as any widget goes outside the visual window (top or bottom).
+        // 3. OVER_SCROLL_NEVER eliminates rubber-band shaking/jittering ("kaanp").
+        ScrollView scrollView = new ScrollView(this) {
+            private boolean isOverflowingVisualWindow() {
+                if (getChildCount() == 0) return false;
+                View child = getChildAt(0);
+                return child.getHeight() > getHeight();
+            }
+
+            @Override
+            public boolean onInterceptTouchEvent(MotionEvent ev) {
+                if (!isOverflowingVisualWindow()) {
+                    if (getScrollY() != 0) scrollTo(0, 0);
+                    return false;
+                }
+                return super.onInterceptTouchEvent(ev);
+            }
+
+            @Override
+            public boolean onTouchEvent(MotionEvent ev) {
+                if (!isOverflowingVisualWindow()) {
+                    if (getScrollY() != 0) scrollTo(0, 0);
+                    return false;
+                }
+                return super.onTouchEvent(ev);
+            }
+        };
+        scrollView.setFillViewport(false);
+        scrollView.setOverScrollMode(View.OVER_SCROLL_NEVER);
+        scrollView.setVerticalScrollBarEnabled(true);
         FrameLayout.LayoutParams scrollLp = new FrameLayout.LayoutParams(
                 FrameLayout.LayoutParams.MATCH_PARENT,
                 FrameLayout.LayoutParams.MATCH_PARENT
@@ -172,14 +204,17 @@ public class FloatingDashboardService extends Service {
         if (isAutoFix) {
             LinearLayout autoStack = new LinearLayout(this);
             autoStack.setOrientation(LinearLayout.VERTICAL);
-            autoStack.setPadding(dpToPx(10), dpToPx(10), dpToPx(10), dpToPx(10));
-            for (DynamicOverlayRegistry.OverlayItemSpec spec : specs) {
+            autoStack.setPadding(dpToPx(8), dpToPx(8), dpToPx(8), dpToPx(8));
+            for (int i = 0; i < specs.size(); i++) {
+                DynamicOverlayRegistry.OverlayItemSpec spec = specs.get(i);
                 View childView = buildDynamicComponentView(spec);
                 LinearLayout.LayoutParams itemLp = new LinearLayout.LayoutParams(
                         LinearLayout.LayoutParams.MATCH_PARENT,
                         dpToPx(Math.max(36, spec.heightDp))
                 );
-                itemLp.bottomMargin = dpToPx(8);
+                if (i < specs.size() - 1) {
+                    itemLp.bottomMargin = dpToPx(6);
+                }
                 autoStack.addView(childView, itemLp);
             }
             scrollView.addView(autoStack, new FrameLayout.LayoutParams(
@@ -188,16 +223,29 @@ public class FloatingDashboardService extends Service {
             ));
         } else {
             FrameLayout freeCanvas = new FrameLayout(this);
-            freeCanvas.setPadding(0, 0, 0, dpToPx(12));
+            int minTopDp = 0;
+            for (DynamicOverlayRegistry.OverlayItemSpec spec : specs) {
+                minTopDp = Math.min(minTopDp, spec.posYDp);
+            }
+            int topOverflowShiftDp = minTopDp < 0 ? (-minTopDp + 8) : 0;
+            int maxBottomDp = 0;
             for (DynamicOverlayRegistry.OverlayItemSpec spec : specs) {
                 View childView = buildDynamicComponentView(spec);
+                int wDp = Math.max(36, spec.widthDp);
+                int hDp = Math.max(32, spec.heightDp);
+                int xDp = Math.max(0, spec.posXDp);
+                int yDp = spec.posYDp + topOverflowShiftDp;
+                maxBottomDp = Math.max(maxBottomDp, yDp + hDp);
                 FrameLayout.LayoutParams itemLp = new FrameLayout.LayoutParams(
-                        dpToPx(Math.max(36, spec.widthDp)),
-                        dpToPx(Math.max(32, spec.heightDp))
+                        dpToPx(wDp),
+                        dpToPx(hDp)
                 );
-                itemLp.leftMargin = dpToPx(Math.max(0, spec.posXDp));
-                itemLp.topMargin = dpToPx(Math.max(0, spec.posYDp));
+                itemLp.leftMargin = dpToPx(xDp);
+                itemLp.topMargin = dpToPx(yDp);
                 freeCanvas.addView(childView, itemLp);
+            }
+            if (minTopDp < 0 || dpToPx(maxBottomDp) > currentCanvasH[0]) {
+                freeCanvas.setPadding(0, 0, 0, dpToPx(8));
             }
             scrollView.addView(freeCanvas, new FrameLayout.LayoutParams(
                     FrameLayout.LayoutParams.MATCH_PARENT,
@@ -410,6 +458,12 @@ public class FloatingDashboardService extends Service {
                 } catch (Exception ignored) {
                 }
                 seekBar.setProgress(initProgress);
+                seekBar.setOnTouchListener((v, event) -> {
+                    if (v.getParent() != null) {
+                        v.getParent().requestDisallowInterceptTouchEvent(true);
+                    }
+                    return false;
+                });
                 seekBar.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
                     @Override
                     public void onProgressChanged(SeekBar sb, int progress, boolean fromUser) {

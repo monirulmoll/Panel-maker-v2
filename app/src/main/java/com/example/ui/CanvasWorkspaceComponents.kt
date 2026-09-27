@@ -3,7 +3,9 @@ package com.example.ui
 import android.graphics.BitmapFactory
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.Image
+import androidx.compose.foundation.LocalOverscrollConfiguration
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -61,8 +63,11 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
@@ -72,6 +77,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
@@ -109,6 +115,7 @@ data class SketchwarePaletteEntry(
  * Top bar showing ONLY the widgets currently added by the user.
  * Tapping any widget chip immediately selects that exact widget and opens its Edit Mode inspector.
  */
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun ComponentTrackerBanner(
     summary: ComponentCountSummary,
@@ -117,6 +124,7 @@ fun ComponentTrackerBanner(
     onSelectComponentForEdit: (Long) -> Unit = {},
     modifier: Modifier = Modifier
 ) {
+    CompositionLocalProvider(LocalOverscrollConfiguration provides null) {
     Surface(
         modifier = modifier
             .fillMaxWidth()
@@ -184,12 +192,14 @@ fun ComponentTrackerBanner(
             }
         }
     }
+    }
 }
 
 /**
  * Sketchware-style Left Vertical Sidebar Palette + Center Phone Device Mockup Workspace
  * matching the reference screenshot.
  */
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun SketchwareStudioSplitWorkspace(
     project: StudioProjectEntity,
@@ -239,6 +249,7 @@ fun SketchwareStudioSplitWorkspace(
         )
     }
 
+    CompositionLocalProvider(LocalOverscrollConfiguration provides null) {
     Row(
         modifier = modifier
             .fillMaxWidth()
@@ -426,13 +437,11 @@ fun SketchwareStudioSplitWorkspace(
                         }
                     }
 
-                    // White Phone Screen Interior holding the Floating Window Canvas (Maximized height!)
+                    // White Phone Screen Interior holding the Floating Window Canvas (No outer competing scroll!)
                     Box(
                         modifier = Modifier
                             .fillMaxSize()
                             .background(Color.White)
-                            .verticalScroll(rememberScrollState())
-                            .horizontalScroll(rememberScrollState())
                             .padding(6.dp),
                         contentAlignment = Alignment.TopStart
                     ) {
@@ -451,6 +460,7 @@ fun SketchwareStudioSplitWorkspace(
                 }
             }
         }
+    }
     }
 }
 
@@ -518,6 +528,7 @@ private fun SketchwarePaletteItemCard(
  * Surrounded by Image-Crop style corner/edge drag handles so the user can smoothly
  * shrink or expand the Floating Mod Menu body from its endpoints.
  */
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun InteractiveFloatingCanvasWorkspace(
     project: StudioProjectEntity,
@@ -533,16 +544,61 @@ fun InteractiveFloatingCanvasWorkspace(
 ) {
     val density = LocalDensity.current
     val onResizeState by rememberUpdatedState(onResizeCanvas)
+    var liveCanvasDeltaWdp by remember(project.canvasWidthDp) { mutableIntStateOf(0) }
+    var liveCanvasDeltaHdp by remember(project.canvasHeightDp) { mutableIntStateOf(0) }
     var cropAccumW by remember { mutableFloatStateOf(0f) }
     var cropAccumH by remember { mutableFloatStateOf(0f) }
 
+    val displayCanvasWidthDp = (project.canvasWidthDp + liveCanvasDeltaWdp).coerceIn(170, 420)
+    val displayCanvasHeightDp = (project.canvasHeightDp + liveCanvasDeltaHdp).coerceIn(160, 620)
+
     val canvasBgColor = parseComposeColor(project.canvasBgColorHex, Color(0xFFF8FAFC))
     val isAutoFixSize = project.autoFixSize
-    val maxWidgetBottomDp = remember(components, project.canvasHeightDp) {
-        val bottomMost = components.maxOfOrNull { it.posYDp + it.heightDp + 12 } ?: 0
-        maxOf(project.canvasHeightDp, bottomMost)
+
+    // Visual Screen Overflow Detection:
+    // 1. Scroll is strictly 0 (disabled) while all widgets fit inside 0 .. displayCanvasHeightDp.
+    // 2. As soon as ANY widget goes outside the top (< 0) or bottom (> displayCanvasHeightDp) visual screen,
+    //    scroll turns ON automatically for both bottom and top visual regions.
+    val minWidgetTopDp = remember(components) {
+        components.minOfOrNull { it.posYDp } ?: 0
+    }
+    val maxWidgetBottomDp = remember(components) {
+        components.maxOfOrNull { it.posYDp + it.heightDp } ?: 0
+    }
+    val isVisualOverflowing = remember(components, minWidgetTopDp, maxWidgetBottomDp, displayCanvasHeightDp) {
+        components.isNotEmpty() && (minWidgetTopDp < 0 || maxWidgetBottomDp > displayCanvasHeightDp)
+    }
+    val topOverflowShiftDp = remember(minWidgetTopDp) {
+        if (minWidgetTopDp < 0) (-minWidgetTopDp + 8) else 0
+    }
+    val scrollableContentHeightDp = remember(isVisualOverflowing, maxWidgetBottomDp, topOverflowShiftDp, displayCanvasHeightDp) {
+        if (isVisualOverflowing) {
+            maxOf(displayCanvasHeightDp, maxWidgetBottomDp + topOverflowShiftDp + 8)
+        } else {
+            displayCanvasHeightDp
+        }
     }
 
+    val canvasScrollState = rememberScrollState()
+    var prevComponentCount by remember { mutableIntStateOf(components.size) }
+
+    LaunchedEffect(isVisualOverflowing) {
+        if (!isVisualOverflowing && canvasScrollState.value != 0) {
+            canvasScrollState.scrollTo(0)
+        }
+    }
+
+    LaunchedEffect(components.size, isVisualOverflowing, scrollableContentHeightDp) {
+        if (components.size > prevComponentCount && isVisualOverflowing) {
+            val targetScroll = canvasScrollState.maxValue
+            if (targetScroll > 0) {
+                canvasScrollState.animateScrollTo(targetScroll)
+            }
+        }
+        prevComponentCount = components.size
+    }
+
+    CompositionLocalProvider(LocalOverscrollConfiguration provides null) {
     Column(
         modifier = modifier,
         horizontalAlignment = Alignment.Start
@@ -554,7 +610,7 @@ fun InteractiveFloatingCanvasWorkspace(
         ) {
             Card(
                 modifier = Modifier
-                    .width(project.canvasWidthDp.dp)
+                    .width(displayCanvasWidthDp.dp)
                     .testTag("floating_canvas_window"),
                 shape = RoundedCornerShape(8.dp),
                 elevation = CardDefaults.cardElevation(defaultElevation = 4.dp),
@@ -611,8 +667,8 @@ fun InteractiveFloatingCanvasWorkspace(
                     // THE MOBILE CANVAS WORKSPACE (100% EMPTY BY DEFAULT)
                     Box(
                         modifier = Modifier
-                            .width(project.canvasWidthDp.dp)
-                            .height(project.canvasHeightDp.dp)
+                            .width(displayCanvasWidthDp.dp)
+                            .height(displayCanvasHeightDp.dp)
                             .background(canvasBgColor)
                             .clickable(
                                 interactionSource = remember { androidx.compose.foundation.interaction.MutableInteractionSource() },
@@ -708,20 +764,27 @@ fun InteractiveFloatingCanvasWorkspace(
                                 )
                             }
                         } else {
-                            // Scrollable interior container so if many widgets are added, the floating window scrolls smoothly
-                            Box(
-                                modifier = Modifier
+                            // Scroll is ZERO (enabled = false) until any widget goes outside the visual screen;
+                            // as soon as a widget goes outside top or bottom, scroll turns ON (enabled = true)!
+                            val scrollContainerModifier = if (isVisualOverflowing) {
+                                Modifier
                                     .fillMaxSize()
-                                    .verticalScroll(rememberScrollState())
+                                    .verticalScroll(state = canvasScrollState, enabled = true)
+                            } else {
+                                Modifier.fillMaxSize()
+                            }
+                            Box(
+                                modifier = scrollContainerModifier
                             ) {
                                 Box(
                                     modifier = Modifier
-                                        .width(project.canvasWidthDp.dp)
-                                        .height(maxWidgetBottomDp.dp)
+                                        .width(displayCanvasWidthDp.dp)
+                                        .height(scrollableContentHeightDp.dp)
                                 ) {
                                     components.forEach { comp ->
                                         CanvasElementView(
                                             component = comp,
+                                            topOverflowShiftDp = topOverflowShiftDp,
                                             isSelected = comp.id == selectedComponentId,
                                             isLivePreviewMode = false,
                                             isAutoFixSize = isAutoFixSize,
@@ -745,12 +808,47 @@ fun InteractiveFloatingCanvasWorkspace(
                                     }
                                 }
                             }
+
+                            // Top & Bottom Visual Overflow Scroll Indicators (Only visible when scroll is ON)
+                            if (isVisualOverflowing) {
+                                if (canvasScrollState.value > 0) {
+                                    Surface(
+                                        color = Color(0xFF0F172A).copy(alpha = 0.78f),
+                                        shape = RoundedCornerShape(bottomStart = 6.dp, bottomEnd = 6.dp),
+                                        modifier = Modifier.align(Alignment.TopCenter)
+                                    ) {
+                                        Text(
+                                            text = "▲ Scroll Up",
+                                            color = Color(0xFF38BDF8),
+                                            fontSize = 8.sp,
+                                            fontWeight = FontWeight.ExtraBold,
+                                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 1.dp)
+                                        )
+                                    }
+                                }
+                                if (canvasScrollState.value < canvasScrollState.maxValue) {
+                                    Surface(
+                                        color = Color(0xFF0F172A).copy(alpha = 0.78f),
+                                        shape = RoundedCornerShape(topStart = 6.dp, topEnd = 6.dp),
+                                        modifier = Modifier.align(Alignment.BottomCenter)
+                                    ) {
+                                        Text(
+                                            text = "▼ Scroll Down",
+                                            color = Color(0xFF4ADE80),
+                                            fontSize = 8.sp,
+                                            fontWeight = FontWeight.ExtraBold,
+                                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 1.dp)
+                                        )
+                                    }
+                                }
+                            }
                         }
                     }
                 }
             }
 
             // Manual Crop Handles on Floating Window (Hidden & disabled when Auto Fix Size is ON)
+            // Uses stationary pointerInput + commit on release so handles NEVER shake/oscillate!
             if (!isAutoFixSize) {
                 // 1. RIGHT EDGE IMAGE-CROP RESIZE HANDLE (Width +/-)
                 Box(
@@ -762,15 +860,28 @@ fun InteractiveFloatingCanvasWorkspace(
                         .clip(RoundedCornerShape(8.dp))
                         .background(Color(0xFF0288D1))
                         .border(1.5.dp, Color.White, RoundedCornerShape(8.dp))
-                        .pointerInput(Unit) {
+                        .pointerInput(project.canvasWidthDp) {
                             detectDragGestures(
-                                onDragStart = { cropAccumW = 0f },
+                                onDragStart = {
+                                    cropAccumW = 0f
+                                    liveCanvasDeltaWdp = 0
+                                },
+                                onDragEnd = {
+                                    if (liveCanvasDeltaWdp != 0) {
+                                        val finalW = liveCanvasDeltaWdp
+                                        liveCanvasDeltaWdp = 0
+                                        onResizeState(finalW, 0)
+                                    }
+                                },
+                                onDragCancel = {
+                                    liveCanvasDeltaWdp = 0
+                                },
                                 onDrag = { change, dragAmount ->
                                     change.consume()
                                     cropAccumW += dragAmount.x
                                     val stepWDp = (cropAccumW / density.density).roundToInt()
                                     if (stepWDp != 0) {
-                                        cropAccumW -= stepWDp * density.density
+                                        cropAccumW = 0f
                                         onResizeState(stepWDp, 0)
                                     }
                                 }
@@ -792,15 +903,28 @@ fun InteractiveFloatingCanvasWorkspace(
                         .clip(RoundedCornerShape(8.dp))
                         .background(Color(0xFF0288D1))
                         .border(1.5.dp, Color.White, RoundedCornerShape(8.dp))
-                        .pointerInput(Unit) {
+                        .pointerInput(project.canvasHeightDp) {
                             detectDragGestures(
-                                onDragStart = { cropAccumH = 0f },
+                                onDragStart = {
+                                    cropAccumH = 0f
+                                    liveCanvasDeltaHdp = 0
+                                },
+                                onDragEnd = {
+                                    if (liveCanvasDeltaHdp != 0) {
+                                        val finalH = liveCanvasDeltaHdp
+                                        liveCanvasDeltaHdp = 0
+                                        onResizeState(0, finalH)
+                                    }
+                                },
+                                onDragCancel = {
+                                    liveCanvasDeltaHdp = 0
+                                },
                                 onDrag = { change, dragAmount ->
                                     change.consume()
                                     cropAccumH += dragAmount.y
                                     val stepHDp = (cropAccumH / density.density).roundToInt()
                                     if (stepHDp != 0) {
-                                        cropAccumH -= stepHDp * density.density
+                                        cropAccumH = 0f
                                         onResizeState(0, stepHDp)
                                     }
                                 }
@@ -821,7 +945,7 @@ fun InteractiveFloatingCanvasWorkspace(
                         .clip(RoundedCornerShape(6.dp))
                         .background(Color(0xFF00C853))
                         .border(2.dp, Color.White, RoundedCornerShape(6.dp))
-                        .pointerInput(Unit) {
+                        .pointerInput(project.canvasWidthDp, project.canvasHeightDp) {
                             detectDragGestures(
                                 onDragStart = {
                                     cropAccumW = 0f
@@ -834,8 +958,8 @@ fun InteractiveFloatingCanvasWorkspace(
                                     val stepWDp = (cropAccumW / density.density).roundToInt()
                                     val stepHDp = (cropAccumH / density.density).roundToInt()
                                     if (stepWDp != 0 || stepHDp != 0) {
-                                        cropAccumW -= stepWDp * density.density
-                                        cropAccumH -= stepHDp * density.density
+                                        cropAccumW = 0f
+                                        cropAccumH = 0f
                                         onResizeState(stepWDp, stepHDp)
                                     }
                                 }
@@ -849,11 +973,13 @@ fun InteractiveFloatingCanvasWorkspace(
             }
         }
     }
+    }
 }
 
 @Composable
 private fun CanvasElementView(
     component: CanvasComponentEntity,
+    topOverflowShiftDp: Int = 0,
     isSelected: Boolean,
     isLivePreviewMode: Boolean,
     isAutoFixSize: Boolean = false,
@@ -870,8 +996,12 @@ private fun CanvasElementView(
     val onTapState by rememberUpdatedState(onTapElement)
     val onToggleState by rememberUpdatedState(onToggleOnOffDirect)
 
-    var dragAccumX by remember(component.id) { mutableFloatStateOf(0f) }
-    var dragAccumY by remember(component.id) { mutableFloatStateOf(0f) }
+    // Smooth, jitter-free drag state:
+    // During finger drag, the pointerInput box stays fixed at (posXDp, posYDp) so its local coordinate
+    // space NEVER shifts mid-gesture, while graphicsLayer translates the visual widget at 60fps.
+    // On drag release, the exact dp delta is committed once to Room DB!
+    var liveDragXPx by remember(component.id, component.posXDp, component.posYDp) { mutableFloatStateOf(0f) }
+    var liveDragYPx by remember(component.id, component.posXDp, component.posYDp) { mutableFloatStateOf(0f) }
     var resizeAccumW by remember(component.id) { mutableFloatStateOf(0f) }
     var resizeAccumH by remember(component.id) { mutableFloatStateOf(0f) }
 
@@ -897,16 +1027,53 @@ private fun CanvasElementView(
         else -> Color(0xFF475569)
     }
 
-    // Outer container positioned at (posXDp, posYDp) holding the widget body + Image-Crop resize handles
+    val dragGestureModifier = if (!isLivePreviewMode && !isAutoFixSize) {
+        Modifier.pointerInput(component.id, isLivePreviewMode, isAutoFixSize) {
+            detectDragGestures(
+                onDragStart = {
+                    liveDragXPx = 0f
+                    liveDragYPx = 0f
+                    onTapState()
+                },
+                onDragEnd = {
+                    val totalDxDp = (liveDragXPx / density.density).roundToInt()
+                    val totalDyDp = (liveDragYPx / density.density).roundToInt()
+                    liveDragXPx = 0f
+                    liveDragYPx = 0f
+                    if (totalDxDp != 0 || totalDyDp != 0) {
+                        onDragState(totalDxDp, totalDyDp)
+                    }
+                },
+                onDragCancel = {
+                    liveDragXPx = 0f
+                    liveDragYPx = 0f
+                },
+                onDrag = { change, dragAmount ->
+                    change.consume()
+                    liveDragXPx += dragAmount.x
+                    liveDragYPx += dragAmount.y
+                }
+            )
+        }
+    } else {
+        Modifier
+    }
+
+    // Outer container positioned at (posXDp, posYDp + topOverflowShiftDp)
     Box(
         modifier = Modifier
             .offset {
                 IntOffset(
                     x = with(density) { currentComp.posXDp.dp.roundToPx() },
-                    y = with(density) { currentComp.posYDp.dp.roundToPx() }
+                    y = with(density) { (currentComp.posYDp + topOverflowShiftDp).dp.roundToPx() }
                 )
             }
             .size(width = component.widthDp.dp, height = component.heightDp.dp)
+            .then(dragGestureModifier)
+            .graphicsLayer {
+                translationX = liveDragXPx
+                translationY = liveDragYPx
+            }
     ) {
         // Inner Widget Body
         Box(
@@ -919,29 +1086,6 @@ private fun CanvasElementView(
                     color = borderColor,
                     shape = RoundedCornerShape(6.dp)
                 )
-                .pointerInput(component.id, isLivePreviewMode, isAutoFixSize) {
-                    if (!isLivePreviewMode && !isAutoFixSize) {
-                        detectDragGestures(
-                            onDragStart = {
-                                dragAccumX = 0f
-                                dragAccumY = 0f
-                                onTapState()
-                            },
-                            onDrag = { change, dragAmount ->
-                                change.consume()
-                                dragAccumX += dragAmount.x
-                                dragAccumY += dragAmount.y
-                                val stepXDp = (dragAccumX / density.density).roundToInt()
-                                val stepYDp = (dragAccumY / density.density).roundToInt()
-                                if (stepXDp != 0 || stepYDp != 0) {
-                                    dragAccumX -= stepXDp * density.density
-                                    dragAccumY -= stepYDp * density.density
-                                    onDragState(stepXDp, stepYDp)
-                                }
-                            }
-                        )
-                    }
-                }
                 .clickable { onTapState() }
                 .testTag("canvas_element_${component.id}")
         ) {
@@ -1264,7 +1408,7 @@ private fun CanvasElementView(
                         .clip(RoundedCornerShape(6.dp))
                         .background(Color(0xFF0288D1))
                         .border(1.dp, Color.White, RoundedCornerShape(6.dp))
-                        .pointerInput(component.id) {
+                        .pointerInput(component.id, component.widthDp) {
                             detectDragGestures(
                                 onDragStart = {
                                     resizeAccumW = 0f
@@ -1275,7 +1419,7 @@ private fun CanvasElementView(
                                     resizeAccumW += dragAmount.x
                                     val stepWDp = (resizeAccumW / density.density).roundToInt()
                                     if (stepWDp != 0) {
-                                        resizeAccumW -= stepWDp * density.density
+                                        resizeAccumW = 0f
                                         onResizeState(stepWDp, 0)
                                     }
                                 }
@@ -1297,7 +1441,7 @@ private fun CanvasElementView(
                         .clip(RoundedCornerShape(6.dp))
                         .background(Color(0xFF0288D1))
                         .border(1.dp, Color.White, RoundedCornerShape(6.dp))
-                        .pointerInput(component.id) {
+                        .pointerInput(component.id, component.heightDp) {
                             detectDragGestures(
                                 onDragStart = {
                                     resizeAccumH = 0f
@@ -1308,7 +1452,7 @@ private fun CanvasElementView(
                                     resizeAccumH += dragAmount.y
                                     val stepHDp = (resizeAccumH / density.density).roundToInt()
                                     if (stepHDp != 0) {
-                                        resizeAccumH -= stepHDp * density.density
+                                        resizeAccumH = 0f
                                         onResizeState(0, stepHDp)
                                     }
                                 }
@@ -1330,7 +1474,7 @@ private fun CanvasElementView(
                     .clip(RoundedCornerShape(5.dp))
                     .background(if (isSelected) Color(0xFF00C853) else Color(0xFF0288D1))
                     .border(1.5.dp, Color.White, RoundedCornerShape(5.dp))
-                    .pointerInput(component.id) {
+                    .pointerInput(component.id, component.widthDp, component.heightDp) {
                         detectDragGestures(
                             onDragStart = {
                                 resizeAccumW = 0f
@@ -1344,8 +1488,8 @@ private fun CanvasElementView(
                                 val stepWDp = (resizeAccumW / density.density).roundToInt()
                                 val stepHDp = (resizeAccumH / density.density).roundToInt()
                                 if (stepWDp != 0 || stepHDp != 0) {
-                                    resizeAccumW -= stepWDp * density.density
-                                    resizeAccumH -= stepHDp * density.density
+                                    resizeAccumW = 0f
+                                    resizeAccumH = 0f
                                     onResizeState(stepWDp, stepHDp)
                                 }
                             }

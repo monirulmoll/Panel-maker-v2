@@ -4,6 +4,8 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.LocalOverscrollConfiguration
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -62,6 +64,7 @@ import androidx.compose.material3.Tab
 import androidx.compose.material3.TabRow
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
@@ -93,7 +96,7 @@ import java.util.Locale
  * 3. Horizontal scrollable square white property cards ("inject", "convert", "width", "height", "on/off", "bg color", "image", "sound") + floating "... See All" card.
  * 4. Interactive property form for editing dimensions, hex colors/images, sound triggers, and file byte offsets.
  */
-@OptIn(ExperimentalLayoutApi::class)
+@OptIn(ExperimentalLayoutApi::class, ExperimentalFoundationApi::class)
 @Composable
 fun PropertyInspectorBottomDock(
     component: CanvasComponentEntity,
@@ -183,6 +186,7 @@ fun PropertyInspectorBottomDock(
         "${prefix}${component.id}"
     }
 
+    CompositionLocalProvider(LocalOverscrollConfiguration provides null) {
     Surface(
         modifier = modifier
             .fillMaxWidth()
@@ -326,7 +330,7 @@ fun PropertyInspectorBottomDock(
                     horizontalArrangement = Arrangement.spacedBy(6.dp)
                 ) {
                     SketchwarePropertySquareCard(
-                        title = if (isAutoFixSize) "auto: on" else "auto fix",
+                        title = "auto fix",
                         icon = Icons.Default.SwapHoriz,
                         iconTint = if (isAutoFixSize) Color(0xFF00C853) else Color(0xFF0288D1),
                         isSelected = isAutoFixSize,
@@ -1033,6 +1037,7 @@ fun PropertyInspectorBottomDock(
             }
         }
     }
+    }
 }
 
 @Composable
@@ -1046,9 +1051,9 @@ private fun SketchwarePropertySquareCard(
     Surface(
         onClick = onClick,
         shape = RoundedCornerShape(6.dp),
-        color = Color.White,
+        color = if (isSelected) Color(0xFFE0F2FE) else Color.White,
         border = BorderStroke(
-            width = if (isSelected) 1.5.dp else 1.dp,
+            width = 1.5.dp,
             color = if (isSelected) Color(0xFF0288D1) else Color(0xFFCBD5E1)
         ),
         shadowElevation = 1.dp,

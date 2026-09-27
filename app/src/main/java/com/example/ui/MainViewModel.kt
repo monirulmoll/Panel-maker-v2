@@ -283,9 +283,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         customTextHex: String? = null
     ) {
         val project = _uiState.value.activeProject ?: return
-        val existingCount = activeComponents.value.size
-        val staggerX = (12 + (existingCount * 10) % 60).coerceAtMost((project.canvasWidthDp - 140).coerceAtLeast(8))
-        val staggerY = (14 + (existingCount * 26) % 220).coerceAtMost((project.canvasHeightDp - 56).coerceAtLeast(8))
+        val existingComponents = activeComponents.value
+        val existingCount = existingComponents.size
+        val staggerX = (10 + (existingCount * 6) % 24).coerceAtMost((project.canvasWidthDp - 180).coerceAtLeast(8))
+        val staggerY = if (existingComponents.isEmpty()) {
+            10
+        } else {
+            existingComponents.maxOf { it.posYDp + it.heightDp } + 8
+        }
         val defaultOffset = String.format(Locale.US, "0x%02X", 4 + (existingCount * 4))
 
         val (defaultW, defaultH, defaultBg) = when (widgetType) {
@@ -469,9 +474,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val project = _uiState.value.activeProject
         if (project?.autoFixSize == true) return
         val maxW = project?.canvasWidthDp ?: 310
-        val maxH = project?.canvasHeightDp ?: 380
         val clampedX = newXDp.coerceIn(0, (maxW - 36).coerceAtLeast(0))
-        val clampedY = newYDp.coerceIn(0, (maxH - 32).coerceAtLeast(0))
+        val clampedY = newYDp.coerceIn(-300, 2500)
         updateComponent(component.copy(posXDp = clampedX, posYDp = clampedY))
     }
 
