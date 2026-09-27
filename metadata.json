@@ -1,0 +1,6 @@
+{
+  "name": "Studio Error",
+  "description": "Offline Android Visual Layout Builder (Sketchware style) to create custom floating utility overlay apps from a 100% blank canvas.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

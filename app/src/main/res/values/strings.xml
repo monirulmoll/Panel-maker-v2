@@ -1,0 +1,13 @@
+<resources>
+    <string name="app_name">Studio Error</string>
+    <string name="launcher_title">STUDIO ERROR</string>
+    <string name="launcher_subtitle">Offline Visual Layout Builder for Floating Utility Overlays</string>
+    <string name="btn_create_new_project">Create New Project</string>
+    <string name="btn_select_existing_project">Select Existing Project</string>
+    <string name="empty_canvas_title">100% Blank Floating Canvas</string>
+    <string name="empty_canvas_subtitle">No pre-made controls exist. Tap any widget in the palette above to place it on your floating overlay canvas, then tap it to inspect and edit its properties.</string>
+    <string name="inspector_title">Property Inspector Dock</string>
+    <string name="service_notification_channel">Studio Error Live Overlay</string>
+    <string name="service_notification_title">Studio Error Floating Overlay</string>
+    <string name="service_notification_text">Custom user-built floating overlay is active.</string>
+</resources>
