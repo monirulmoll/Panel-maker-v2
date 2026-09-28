@@ -166,4 +166,44 @@ class ExampleUnitTest {
             hindiMathEval.conversationalReply.contains("728188")
         )
     }
+
+    @Test
+    fun ggufBlueprintEngine_handlesClassBAutonomousChoiceAndRequirementPivot() {
+        // 1. "random path deke example app bana" -> Class B Autonomous Choice -> "Random Path Explorer"
+        val randomPathEval = GgufBlueprintEngine.evaluateUserPrompt("random path deke example app bana")
+        assertTrue("Expected 'random path deke example app bana' to trigger build", randomPathEval.shouldBuildOrUpdateApp)
+        assertEquals("Random Path Explorer", randomPathEval.selectedConceptName)
+
+        val randomPathSpec = GgufBlueprintEngine.generateBlueprintFromPrompt(
+            prompt = "random path deke example app bana",
+            projectId = 1L,
+            defaultTargetFilePath = "/storage/emulated/0/default.bin",
+            modelState = GgufModelState(mode = StudioGenerationMode.AI_GGUF_MODE, isUsingSampleFallback = true)
+        )
+        assertEquals("Random Path Explorer", randomPathSpec.suggestedAppName)
+        assertEquals("PATH_EXPLORER_APP", randomPathSpec.appCategory)
+        assertTrue(randomPathSpec.decisionAnnouncement.contains("Random Path Explorer"))
+
+        // 2. "tu kuch bhi bana sakta hai" -> Class B Autonomous Choice -> immediately builds without asking clarification
+        val kuchBhiEval = GgufBlueprintEngine.evaluateUserPrompt("tu kuch bhi bana sakta hai")
+        assertTrue("Expected 'tu kuch bhi bana sakta hai' to trigger autonomous build", kuchBhiEval.shouldBuildOrUpdateApp)
+
+        // 3. Requirement pivot: "calculator nahi, file manager bana" -> builds File Manager, NOT Calculator
+        val pivotSpec = GgufBlueprintEngine.generateBlueprintFromPrompt(
+            prompt = "calculator nahi, file manager bana",
+            projectId = 2L,
+            defaultTargetFilePath = "/storage/emulated/0/default.bin",
+            modelState = GgufModelState(mode = StudioGenerationMode.AI_GGUF_MODE, isUsingSampleFallback = true)
+        )
+        assertEquals("PATH_EXPLORER_APP", pivotSpec.appCategory)
+        assertEquals("File Manager", pivotSpec.suggestedAppName)
+
+        // 4. Explicit Hindi naming: "kotlin nam se ek app bana" -> names app "Kotlin"
+        val namedEval = GgufBlueprintEngine.evaluateUserPrompt(
+            prompt = "kotlin nam se ek app bana",
+            existingProjectName = "Previous App"
+        )
+        assertTrue("Expected 'kotlin nam se ek app bana' to trigger build/rename", namedEval.shouldBuildOrUpdateApp)
+        assertEquals("Kotlin", namedEval.selectedConceptName)
+    }
 }

@@ -34,6 +34,13 @@ data class GeneratedFileArtifact(
     val role: String
 )
 
+enum class AiRequestClassification {
+    CLASS_A_SPECIFIC_APP,
+    CLASS_B_AUTONOMOUS_CHOICE,
+    CLASS_C_NEEDS_CLARIFICATION,
+    CONVERSATIONAL_CHAT
+}
+
 data class AiChatTurn(
     val id: Long = System.currentTimeMillis(),
     val userPrompt: String,
@@ -53,7 +60,12 @@ data class AiChatTurn(
     val targetDataFilePath: String = "",
     val isFloatingOverlayApp: Boolean = false,
     val appCategory: String = "STANDALONE_ANDROID_APP",
-    val fileArtifacts: List<GeneratedFileArtifact> = emptyList()
+    val fileArtifacts: List<GeneratedFileArtifact> = emptyList(),
+    val requestClass: AiRequestClassification = AiRequestClassification.CLASS_A_SPECIFIC_APP,
+    val decisionAnnouncement: String = "",
+    val appPurpose: String = "",
+    val buildPlanSummary: String = "",
+    val expectedBehavior: String = ""
 )
 
 enum class AiPromptIntent {
@@ -67,7 +79,10 @@ enum class AiPromptIntent {
 data class AiPromptEvaluation(
     val intent: AiPromptIntent,
     val shouldBuildOrUpdateApp: Boolean,
-    val conversationalReply: String = ""
+    val conversationalReply: String = "",
+    val requestClass: AiRequestClassification = AiRequestClassification.CONVERSATIONAL_CHAT,
+    val selectedConceptName: String = "",
+    val decisionAnnouncement: String = ""
 )
 
 data class GgufModelState(
@@ -103,7 +118,12 @@ data class GeneratedBlueprintSpec(
     val publicDownloadApkPath: String = "",
     val projectRootPath: String = "",
     val structuredBuildOutput: String = "",
-    val fileArtifacts: List<GeneratedFileArtifact> = emptyList()
+    val fileArtifacts: List<GeneratedFileArtifact> = emptyList(),
+    val requestClass: AiRequestClassification = AiRequestClassification.CLASS_A_SPECIFIC_APP,
+    val decisionAnnouncement: String = "",
+    val appPurpose: String = "",
+    val buildPlanSummary: String = "",
+    val expectedBehavior: String = ""
 )
 
 /**
@@ -442,23 +462,24 @@ object GgufBlueprintEngine {
         existingComponents: List<CanvasComponentEntity> = emptyList()
     ): AiPromptEvaluation {
         val clean = prompt.trim()
-        val normalized = clean.lowercase(Locale.US)
+        val positivePrompt = stripNegatedClauses(clean)
+        val normalized = positivePrompt.lowercase(Locale.US)
             .replace(Regex("[^a-z0-9/._?+\\-*×÷^%()=\\s]"), " ")
             .replace(Regex("\\s+"), " ")
             .trim()
-        val words = clean.lowercase(Locale.US)
+        val words = positivePrompt.lowercase(Locale.US)
             .replace(Regex("[^a-z0-9/._\\s]"), " ")
             .replace(Regex("\\s+"), " ")
             .trim()
             .split(" ")
             .filter { it.isNotBlank() }
 
-        // 0. Check if the prompt is a direct math / arithmetic calculation question (e.g., "what is 900 + 727288", "900 + 727288", "calculate 25 * 40")
+        // 0. Check if the prompt is a direct math / arithmetic calculation question (e.g., "what is 900 + 727288", "900 + 727288")
         val mathAnswer = evaluateMathQueryOrNull(clean)
         val explicitlyWantsAppBuild = words.any {
             it in setOf("app", "application", "apk", "ui", "screen", "layout", "widget", "overlay", "panel", "button", "slider", "toggle", "switch")
         } && words.any {
-            it in setOf("create", "make", "build", "generate", "develop", "banao", "bana", "banaye", "banado", "design")
+            it in setOf("create", "make", "build", "generate", "develop", "banao", "bana", "banaye", "banado", "design", "dikha")
         }
 
         if (mathAnswer != null && !explicitlyWantsAppBuild) {
@@ -476,33 +497,104 @@ object GgufBlueprintEngine {
             return AiPromptEvaluation(
                 intent = AiPromptIntent.CONVERSATIONAL_CHAT,
                 shouldBuildOrUpdateApp = false,
-                conversationalReply = dynamicReply
+                conversationalReply = dynamicReply,
+                requestClass = AiRequestClassification.CONVERSATIONAL_CHAT
             )
         }
 
         val hasActionBuildVerb = words.any {
             it in setOf(
                 "create", "make", "build", "generate", "write", "code", "compile", "develop",
-                "banao", "bana", "banaye", "banado", "likho", "add", "jodo", "remove", "hatao",
-                "delete", "rename", "patch", "modify", "update", "implement", "design"
+                "banao", "bana", "banaye", "banado", "banade", "likho", "add", "jodo", "remove", "hatao",
+                "delete", "rename", "patch", "modify", "update", "implement", "design", "dikha", "rakh", "rakho"
             )
         }
+
+        val hasAutonomousPermission = hasPermissionToChooseConcept(clean.lowercase(Locale.US), words)
+        val isFollowUpConfirmation = isAffirmativeContinuation(clean.lowercase(Locale.US), words) &&
+            (chatHistory.isNotEmpty() || !existingProjectName.isNullOrBlank())
+        val isAppRenameCommand = extractExplicitAppNameOrNull(clean) != null &&
+            (hasActionBuildVerb || "nam" in words || "naam" in words || "name" in words || "call" in words)
         val hasSpecificAppOrCodeTarget = hasAppFeatureKeywords(normalized, words)
 
-        // 1. If the user explicitly asks to add features, write code, or build a specific app/widget -> Trigger Pipeline!
-        if ((hasActionBuildVerb && hasSpecificAppOrCodeTarget) ||
-            (hasSpecificAppOrCodeTarget && words.size >= 2 && !isPureQuestionWithoutBuildIntent(normalized, words))
+        // 1. Class A — Specific app or feature request (including requirement pivot like "calculator nahi, file manager bana" or rename)
+        if ((hasSpecificAppOrCodeTarget && !hasAutonomousPermission &&
+                (hasActionBuildVerb || (words.size >= 2 && !isPureQuestionWithoutBuildIntent(normalized, words)))) ||
+            (isAppRenameCommand && !existingProjectName.isNullOrBlank())
         ) {
+            val isFloating = isFloatingOverlayPrompt(positivePrompt)
+            val category = detectAppCategory(positivePrompt, isFloating)
+            val chosenName = synthesizeDynamicAppName(
+                cleanPrompt = positivePrompt,
+                lower = positivePrompt.lowercase(Locale.US),
+                appCategory = category,
+                isAutonomousClassB = false,
+                existingProjectName = existingProjectName
+            )
             return AiPromptEvaluation(
                 intent = AiPromptIntent.BUILD_OR_MODIFY_APP,
                 shouldBuildOrUpdateApp = true,
-                conversationalReply = ""
+                conversationalReply = "",
+                requestClass = AiRequestClassification.CLASS_A_SPECIFIC_APP,
+                selectedConceptName = chosenName,
+                decisionAnnouncement = "Got it. I’ll build $chosenName based on your request."
             )
         }
 
-        // 2. Otherwise, this is a conversational message, question, greeting, or vague build request.
-        // Dynamically synthesize the bot's natural response from the user's exact words & context!
+        // 2. Class B — Vague request WITH permission to choose ("tu kuch bhi bana sakta hai", "random app bana",
+        //    "random path deke example app bana", "anything", "random", "example", "you decide", or follow-up "haan" / "yes")
+        val alreadyAskedClarificationInHistory = chatHistory.any {
+            it.isConversationalReply && it.requestClass == AiRequestClassification.CLASS_C_NEEDS_CLARIFICATION
+        }
+        if (hasAutonomousPermission || isFollowUpConfirmation || isAppRenameCommand ||
+            (hasActionBuildVerb && alreadyAskedClarificationInHistory)
+        ) {
+            val isFloating = isFloatingOverlayPrompt(positivePrompt)
+            val category = selectAutonomousAppCategory(positivePrompt, isFloating, chatHistory, existingProjectName)
+            val chosenName = if (isFollowUpConfirmation && !existingProjectName.isNullOrBlank()) {
+                existingProjectName
+            } else {
+                val prevSelected = chatHistory.lastOrNull { it.appName.isNotBlank() }?.appName
+                if (isFollowUpConfirmation && !prevSelected.isNullOrBlank()) {
+                    prevSelected
+                } else {
+                    synthesizeDynamicAppName(
+                        cleanPrompt = positivePrompt,
+                        lower = positivePrompt.lowercase(Locale.US),
+                        appCategory = category,
+                        isAutonomousClassB = true,
+                        existingProjectName = existingProjectName
+                    )
+                }
+            }
+            return AiPromptEvaluation(
+                intent = AiPromptIntent.BUILD_OR_MODIFY_APP,
+                shouldBuildOrUpdateApp = true,
+                conversationalReply = "",
+                requestClass = AiRequestClassification.CLASS_B_AUTONOMOUS_CHOICE,
+                selectedConceptName = chosenName,
+                decisionAnnouncement = "Got it. I’ll build a $chosenName as the example app."
+            )
+        }
+
+        // 3. Class C — Vague build request WITHOUT permission to choose (e.g., "Make an app for me", "ek app banao")
         val intent = classifyConversationalSubIntent(normalized, words, hasActionBuildVerb, hasSpecificAppOrCodeTarget)
+        if (intent == AiPromptIntent.VAGUE_BUILD_WITHOUT_DETAILS) {
+            val isHindi = words.any { it in setOf("ek", "banao", "bana", "mujhe", "mere", "liye", "kaisa", "konsa", "app") && ("banao" in words || "bana" in words || "chahiye" in words) }
+            val conciseQuestion = if (isHindi) {
+                "Aap kis tarah ka app banwana chahte hain (jaise Calculator, Path Explorer, Expense Tracker, ya Notes), ya main khud ek random example app chunu?"
+            } else {
+                "What type of app would you like me to build (e.g., Calculator, Path Explorer, Expense Tracker, or Notes), or should I pick an example app for you?"
+            }
+            return AiPromptEvaluation(
+                intent = AiPromptIntent.VAGUE_BUILD_WITHOUT_DETAILS,
+                shouldBuildOrUpdateApp = false,
+                conversationalReply = conciseQuestion,
+                requestClass = AiRequestClassification.CLASS_C_NEEDS_CLARIFICATION
+            )
+        }
+
+        // 4. Normal conversational message / greeting / question
         val dynamicReply = synthesizeDynamicBotReply(
             rawPrompt = clean,
             normalized = normalized,
@@ -518,8 +610,93 @@ object GgufBlueprintEngine {
         return AiPromptEvaluation(
             intent = intent,
             shouldBuildOrUpdateApp = false,
-            conversationalReply = dynamicReply
+            conversationalReply = dynamicReply,
+            requestClass = AiRequestClassification.CONVERSATIONAL_CHAT
         )
+    }
+
+    /**
+     * Strips negated clauses from user prompts (e.g., "calculator nahi, file manager bana",
+     * "not calculator, build a notes app", "instead of timer make a converter") so the
+     * positive target concept is selected accurately.
+     */
+    @JvmStatic
+    fun stripNegatedClauses(rawPrompt: String): String {
+        var result = rawPrompt.trim()
+        // Pattern 1: "<phrase> nahi [,] <rest>" or "<phrase> mat bana [,] <rest>"
+        val hindiNegation = Regex("""(?i)^[^,;.]+?\b(?:nahi|nhi|na|mat\s+bana|mat\s+banao)\b\s*[,;.-]*\s*(.+)$""")
+            .find(result)
+        if (hindiNegation != null && hindiNegation.groupValues[1].isNotBlank()) {
+            result = hindiNegation.groupValues[1].trim()
+        }
+        // Pattern 2: "not <phrase>, <rest>" or "instead of <phrase>, <rest>"
+        val englishNegation = Regex("""(?i)^(?:not|no|instead\s+of|dont\s+make|don't\s+make)\s+[^,;.]+?[,;.]\s*(.+)$""")
+            .find(result)
+        if (englishNegation != null && englishNegation.groupValues[1].isNotBlank()) {
+            result = englishNegation.groupValues[1].trim()
+        }
+        // Also strip inline "<word> nahi" tokens
+        result = result.replace(Regex("""(?i)\b[a-z0-9_]+\s+(?:nahi|nhi)\b[,;]*"""), " ")
+            .replace(Regex("\\s+"), " ")
+            .trim()
+        return if (result.isNotBlank()) result else rawPrompt.trim()
+    }
+
+    private fun hasPermissionToChooseConcept(lower: String, words: List<String>): Boolean {
+        val wordSet = words.toSet()
+        val singlePermissionWords = setOf(
+            "random", "anything", "whatever", "example", "sample", "demo", "surprise"
+        )
+        if (wordSet.any { it in singlePermissionWords }) return true
+
+        val permissionPhrases = listOf(
+            "kuch bhi", "koi bhi", "koi sa bhi", "tu kuch", "tum kuch",
+            "apne hisab", "apni marzi", "apne man", "jo mann", "jo dil",
+            "make any", "build any", "create any", "any app", "you decide",
+            "you choose", "your choice", "up to you", "pick one", "choose for me",
+            "bana ke dikha", "banake dikha", "kuch bana", "khud se"
+        )
+        return permissionPhrases.any { it in lower }
+    }
+
+    private fun isAffirmativeContinuation(lower: String, words: List<String>): Boolean {
+        if (words.isEmpty() || words.size > 5) return false
+        val affirmativeTokens = setOf(
+            "haan", "ha", "han", "yes", "yep", "yeah", "ok", "okay", "sure",
+            "banao", "banado", "start", "proceed", "chalo", "karo", "thik", "theek", "done", "go"
+        )
+        return words.first() in affirmativeTokens || lower in setOf("haan banao", "ok banao", "yes build it", "go ahead", "thik hai", "theek hai")
+    }
+
+    private fun selectAutonomousAppCategory(
+        positivePrompt: String,
+        isFloating: Boolean,
+        chatHistory: List<AiChatTurn>,
+        existingProjectName: String?
+    ): String {
+        val lower = positivePrompt.lowercase(Locale.US)
+        val explicitCategory = detectAppCategory(positivePrompt, isFloating)
+        if (explicitCategory != "STANDALONE_ANDROID_APP") {
+            return explicitCategory
+        }
+        if ("path" in lower || "file" in lower || "folder" in lower || "directory" in lower || "storage" in lower || "explorer" in lower) {
+            return "PATH_EXPLORER_APP"
+        }
+        // If continuing a previously selected app in chat history, preserve its category
+        val prevCategory = chatHistory.lastOrNull { it.appCategory.isNotBlank() && it.appCategory != "STANDALONE_ANDROID_APP" }?.appCategory
+        if (isAffirmativeContinuation(lower, lower.split(" ").filter { it.isNotBlank() }) && !prevCategory.isNullOrBlank()) {
+            return prevCategory
+        }
+        // Choose a sensible, distinct app concept based on prompt/history
+        val autonomousCatalog = listOf(
+            "PATH_EXPLORER_APP",
+            "EXPENSE_TRACKER_APP",
+            "NOTES_APP",
+            "TIMER_APP",
+            "CONVERTER_APP"
+        )
+        val usedCategories = chatHistory.map { it.appCategory }.toSet()
+        return autonomousCatalog.firstOrNull { it !in usedCategories } ?: autonomousCatalog[chatHistory.size % autonomousCatalog.size]
     }
 
     private data class MathEvaluationResult(
@@ -944,10 +1121,13 @@ object GgufBlueprintEngine {
 
     @JvmStatic
     fun detectAppCategory(prompt: String, isFloating: Boolean): String {
-        val lower = prompt.lowercase(Locale.US)
+        val positive = stripNegatedClauses(prompt)
+        val lower = positive.lowercase(Locale.US)
         return when {
             isFloating -> "FLOATING_OVERLAY_APP"
             "calc" in lower || "hisab" in lower || "math" in lower || "arithmetic" in lower -> "CALCULATOR_APP"
+            "path" in lower || "file" in lower || "folder" in lower || "directory" in lower || "explorer" in lower || "storage" in lower -> "PATH_EXPLORER_APP"
+            "expense" in lower || "budget" in lower || "finance" in lower || "kharcha" in lower || "ledger" in lower -> "EXPENSE_TRACKER_APP"
             "timer" in lower || "stopwatch" in lower || "countdown" in lower || "alarm" in lower || "clock" in lower -> "TIMER_APP"
             "note" in lower || "todo" in lower || "task" in lower || "diary" in lower || "clipboard" in lower -> "NOTES_APP"
             "convert" in lower || "bmi" in lower || "currency" in lower || "temperature" in lower || "unit" in lower -> "CONVERTER_APP"
@@ -989,9 +1169,10 @@ object GgufBlueprintEngine {
 
     /**
      * SCRATCH CODE WRITING & AUTONOMOUS SELF-HEALING COMPILER PIPELINE:
-     * 1. Parses the user's natural language prompt into a dynamic AST (never fixed templates).
-     * 2. Dynamically writes complete, functional Android/Kotlin/Java/XML code from scratch.
-     * 3. Scans the generated code and widget bindings for syntax errors, missing imports,
+     * 1. Understands & classifies the user's request (Class A specific vs Class B autonomous concept selection).
+     * 2. Creates a coherent App Specification (Name, Package, Purpose, Main Screen, UI Components, Logic, Permissions).
+     * 3. Dynamically writes complete, functional Android/Kotlin/Java/XML/Gradle files from scratch.
+     * 4. Scans the generated code and widget bindings for syntax errors, missing imports,
      *    broken references, invalid hex colors, and coordinate collisions, and automatically patches
      *    them until 0 errors are achieved.
      */
@@ -1003,42 +1184,84 @@ object GgufBlueprintEngine {
         defaultTargetFilePath: String,
         modelState: GgufModelState,
         existingProjectName: String? = null,
-        existingComponents: List<CanvasComponentEntity> = emptyList()
+        existingComponents: List<CanvasComponentEntity> = emptyList(),
+        chatHistory: List<AiChatTurn> = emptyList()
     ): GeneratedBlueprintSpec {
         val cleanPrompt = prompt.trim()
-        val lower = cleanPrompt.lowercase(Locale.US)
+        val positivePrompt = stripNegatedClauses(cleanPrompt)
+        val lower = positivePrompt.lowercase(Locale.US)
+        val words = lower.replace(Regex("[^a-z0-9/._\\s]"), " ")
+            .replace(Regex("\\s+"), " ")
+            .trim()
+            .split(" ")
+            .filter { it.isNotBlank() }
 
-        // 1. Extract custom target file path if present in prompt (supports spaces in directory names)
+        val isAutonomousChoice = hasPermissionToChooseConcept(cleanPrompt.lowercase(Locale.US), words)
+        val isFollowUpConfirm = isAffirmativeContinuation(cleanPrompt.lowercase(Locale.US), words) &&
+            (chatHistory.isNotEmpty() || !existingProjectName.isNullOrBlank())
+
+        // 1. Extract custom target file path if present in prompt, or generate a realistic path when "random path" is requested
         val pathWithPyOrExt = Regex("""(/storage/emulated/0/[^\n\r"']+?\.[a-zA-Z0-9]{1,5}|/sdcard/[^\n\r"']+?\.[a-zA-Z0-9]{1,5})""")
             .find(cleanPrompt)?.value?.trim()
         val fallbackSimplePath = Regex("""(/storage/emulated/0/[^\s,;]+|/sdcard/[^\s,;]+)""")
             .find(cleanPrompt)?.value?.trim()
-        val extractedPath = pathWithPyOrExt ?: fallbackSimplePath ?: defaultTargetFilePath
+        val extractedPath = when {
+            pathWithPyOrExt != null -> pathWithPyOrExt
+            fallbackSimplePath != null -> fallbackSimplePath
+            "random" in lower && "path" in lower -> "/storage/emulated/0/Download/random_path_explorer_state.json"
+            else -> defaultTargetFilePath
+        }
 
         val isPureApkExportOfExisting = !existingProjectName.isNullOrBlank() &&
             existingComponents.isNotEmpty() &&
             ("apk" in lower) &&
-            !hasSpecificDomainOverride(lower)
+            !hasSpecificDomainOverride(lower) &&
+            !isAutonomousChoice
 
-        // 2. Check if user is incrementally editing an already-built AI app
+        // 2. Check if user is incrementally editing or renaming an already-built AI app
+        val explicitRenameTarget = extractExplicitAppNameOrNull(cleanPrompt)
+        val isExplicitRenameOfExisting = !existingProjectName.isNullOrBlank() &&
+            existingComponents.isNotEmpty() &&
+            explicitRenameTarget != null &&
+            !hasSpecificDomainOverride(lower) &&
+            !isAutonomousChoice
+
         val isIncrementalEdit = !existingProjectName.isNullOrBlank() &&
             existingComponents.isNotEmpty() &&
-            (lower.startsWith("add ") || lower.startsWith("remove ") || lower.startsWith("delete ") ||
+            !hasSpecificDomainOverride(lower) &&
+            (isExplicitRenameOfExisting ||
+                lower.startsWith("add ") || lower.startsWith("remove ") || lower.startsWith("delete ") ||
                 lower.startsWith("rename ") || lower.startsWith("update ") || lower.startsWith("change ") ||
                 "aur add" in lower || "jodo" in lower || "hatao" in lower || "naam badal" in lower)
 
         val isFloating = if (isPureApkExportOfExisting || isIncrementalEdit) {
             existingComponents.firstOrNull()?.label?.contains("Panel", ignoreCase = true) == true ||
-                isFloatingOverlayPrompt(cleanPrompt)
+                isFloatingOverlayPrompt(positivePrompt)
         } else {
-            isFloatingOverlayPrompt(cleanPrompt)
+            isFloatingOverlayPrompt(positivePrompt)
         }
-        val appCategory = detectAppCategory(cleanPrompt, isFloating)
+
+        val appCategory = when {
+            isPureApkExportOfExisting || isIncrementalEdit -> {
+                val prevCat = chatHistory.lastOrNull { it.appCategory.isNotBlank() }?.appCategory
+                prevCat ?: detectAppCategory(positivePrompt, isFloating)
+            }
+            isAutonomousChoice || isFollowUpConfirm -> {
+                selectAutonomousAppCategory(positivePrompt, isFloating, chatHistory, existingProjectName)
+            }
+            else -> detectAppCategory(positivePrompt, isFloating)
+        }
+
+        val requestClass = if (isAutonomousChoice || isFollowUpConfirm) {
+            AiRequestClassification.CLASS_B_AUTONOMOUS_CHOICE
+        } else {
+            AiRequestClassification.CLASS_A_SPECIFIC_APP
+        }
 
         val rawAppName: String
         val rawComponents: List<CanvasComponentEntity>
 
-        if (isPureApkExportOfExisting) {
+        if (isPureApkExportOfExisting || (isFollowUpConfirm && !existingProjectName.isNullOrBlank() && existingComponents.isNotEmpty() && !isAutonomousChoice)) {
             rawAppName = existingProjectName!!
             rawComponents = existingComponents
         } else if (isIncrementalEdit) {
@@ -1053,8 +1276,14 @@ object GgufBlueprintEngine {
             rawAppName = incrementalPair.first
             rawComponents = incrementalPair.second
         } else {
-            rawAppName = synthesizeDynamicAppName(cleanPrompt, lower)
-            val astNodes = parsePromptIntoDynamicAstNodes(cleanPrompt, lower, rawAppName, isFloating, appCategory)
+            rawAppName = synthesizeDynamicAppName(
+                cleanPrompt = positivePrompt,
+                lower = lower,
+                appCategory = appCategory,
+                isAutonomousClassB = isAutonomousChoice,
+                existingProjectName = existingProjectName
+            )
+            val astNodes = parsePromptIntoDynamicAstNodes(positivePrompt, lower, rawAppName, isFloating, appCategory)
             val headerTitle = if (isFloating) "$rawAppName Panel" else rawAppName
             rawComponents = buildComponentsFromDynamicAst(
                 astNodes = astNodes,
@@ -1075,6 +1304,14 @@ object GgufBlueprintEngine {
             .ifEmpty { "ai_scratch_app" }
         val suggestedPkg = "com.ai.$slug"
         val suggestedOverlayTitle = if (isFloating) "$rawAppName Panel" else rawAppName
+
+        val decisionAnnouncement = if (requestClass == AiRequestClassification.CLASS_B_AUTONOMOUS_CHOICE) {
+            "Got it. I’ll build a $rawAppName as the example app."
+        } else {
+            "Got it. I’ll build $rawAppName based on your specification."
+        }
+        val appPurposeSummary = describeAppPurpose(rawAppName, appCategory, isFloating, extractedPath)
+        val expectedBehaviorSummary = describeExpectedBehavior(rawAppName, appCategory, isFloating, rawComponents)
 
         val modelSourceTag = if (modelState.isUsingSampleFallback) {
             "Sample GGUF Fallback (${modelState.modelFileName.ifBlank { SAMPLE_GGUF_FILENAME }})"
@@ -1149,10 +1386,15 @@ object GgufBlueprintEngine {
         )
 
         val structuredBuildOutput = formatStructuredCodeBuildOutput(
+            decisionAnnouncement = decisionAnnouncement,
+            requestClass = requestClass,
             appName = rawAppName,
             packageName = suggestedPkg,
             appCategory = appCategory,
+            appPurpose = appPurposeSummary,
+            expectedBehavior = expectedBehaviorSummary,
             isFloating = isFloating,
+            components = compileReport.verifiedComponents,
             apkFileName = apkFileName,
             apkOutputPath = apkOutputPath,
             publicDownloadApkPath = publicDownloadApkPath,
@@ -1166,7 +1408,9 @@ object GgufBlueprintEngine {
         val fullScratchCodeSummary = buildString {
             appendLine("// ====================================================================")
             appendLine("// AUTONOMOUS SCRATCH CODE ENGINE • Generated via $modelSourceTag")
+            appendLine("// DECISION: $decisionAnnouncement")
             appendLine("// APP_NAME: $rawAppName | PACKAGE_NAME: $suggestedPkg | MODE: $appCategory")
+            appendLine("// PURPOSE: $appPurposeSummary")
             appendLine("// APK_NAME: $apkFileName | APK_PATH: $apkOutputPath")
             appendLine("// PUBLIC_APK_PATH: $publicDownloadApkPath")
             appendLine("// PROJECT_ROOT_PATH: $projectRootPath")
@@ -1205,7 +1449,12 @@ object GgufBlueprintEngine {
             publicDownloadApkPath = publicDownloadApkPath,
             projectRootPath = projectRootPath,
             structuredBuildOutput = structuredBuildOutput,
-            fileArtifacts = artifacts
+            fileArtifacts = artifacts,
+            requestClass = requestClass,
+            decisionAnnouncement = decisionAnnouncement,
+            appPurpose = appPurposeSummary,
+            buildPlanSummary = "10-Step Autonomous Pipeline: Understand -> Classify (${requestClass.name}) -> Spec ($rawAppName) -> Plan -> Generate (${compileReport.verifiedScratchFiles.size} files) -> Validate -> Auto-Fix -> Build APK ($apkFileName) -> Preview -> Result",
+            expectedBehavior = expectedBehaviorSummary
         )
     }
 
@@ -1213,16 +1462,57 @@ object GgufBlueprintEngine {
         val domainWords = listOf(
             "calculator", "calc", "hisab", "math", "timer", "stopwatch", "alarm",
             "note", "todo", "diary", "music", "audio", "player", "converter", "counter",
-            "login", "password", "vip", "mod", "fps", "gyro", "sensitivity"
+            "login", "password", "vip", "mod", "fps", "gyro", "sensitivity",
+            "path", "file", "folder", "explorer", "expense", "budget", "finance"
         )
         return domainWords.any { it in lower }
     }
 
+    private fun describeAppPurpose(
+        appName: String,
+        appCategory: String,
+        isFloating: Boolean,
+        targetPath: String
+    ): String {
+        return when (appCategory) {
+            "PATH_EXPLORER_APP" -> "Inspects, scans, and manages Android file-system paths and metadata bound to '$targetPath'."
+            "EXPENSE_TRACKER_APP" -> "Records, categorizes, and totals daily expenses with persistent local ledger storage."
+            "CALCULATOR_APP" -> "Evaluates arithmetic and scientific math expressions with live keypad and expression display."
+            "TIMER_APP" -> "Tracks countdown durations and stopwatch intervals with start, pause, and reset state controls."
+            "NOTES_APP" -> "Captures, saves, and manages structured notes and task items on device storage."
+            "CONVERTER_APP" -> "Converts numerical values across customizable conversion rates and measurement units."
+            "COUNTER_APP" -> "Tracks live tally counts with increment, decrement, and instant state reset."
+            "AUTH_APP" -> "Validates user credentials and access keys with real-time verification feedback."
+            "MUSIC_APP" -> "Controls audio playback state, master gain level, and equalizer profile settings."
+            else -> if (isFloating) {
+                "Provides a live Android floating overlay panel for '$appName' connected to '$targetPath'."
+            } else {
+                "Standalone Android application for '$appName' with interactive inputs, execution logic, and state persistence."
+            }
+        }
+    }
+
+    private fun describeExpectedBehavior(
+        appName: String,
+        appCategory: String,
+        isFloating: Boolean,
+        components: List<CanvasComponentEntity>
+    ): String {
+        val interactiveLabels = components.filter { it.type != ComponentWidgetType.TEXT.name }.joinToString(", ") { it.label }
+        val modeDesc = if (isFloating) "Floating Window Overlay + Standalone Activity" else "Standalone Android Activity"
+        return "$modeDesc with ${components.size} functional UI widgets ($interactiveLabels) wired to AiScratchLogicEngine."
+    }
+
     private fun formatStructuredCodeBuildOutput(
+        decisionAnnouncement: String,
+        requestClass: AiRequestClassification,
         appName: String,
         packageName: String,
         appCategory: String,
+        appPurpose: String,
+        expectedBehavior: String,
         isFloating: Boolean,
+        components: List<CanvasComponentEntity>,
         apkFileName: String,
         apkOutputPath: String,
         publicDownloadApkPath: String,
@@ -1233,8 +1523,25 @@ object GgufBlueprintEngine {
         finalErrorCount: Int
     ): String {
         val pkgDir = packageName.replace('.', '/')
+        val permissionsList = if (isFloating) {
+            "SYSTEM_ALERT_WINDOW, FOREGROUND_SERVICE, READ_EXTERNAL_STORAGE, WRITE_EXTERNAL_STORAGE"
+        } else {
+            "READ_EXTERNAL_STORAGE, WRITE_EXTERNAL_STORAGE"
+        }
         return buildString {
-            appendLine("[BUILD_TARGET_NAME_AND_PATH_MANIFEST]")
+            appendLine(decisionAnnouncement)
+            appendLine()
+            appendLine("[1. APP_SPECIFICATION]")
+            appendLine("REQUEST_CLASS: ${requestClass.name}")
+            appendLine("APP_NAME: $appName")
+            appendLine("PACKAGE_NAME: $packageName")
+            appendLine("PURPOSE: $appPurpose")
+            appendLine("MAIN_SCREEN: ${packageName}.MainActivity (${if (isFloating) "Floating Overlay + Activity" else "Standalone Activity"})")
+            appendLine("UI_COMPONENTS (${components.size}): ${components.joinToString(" | ") { "${it.type}:${it.label}" }}")
+            appendLine("PERMISSIONS: $permissionsList")
+            appendLine("EXPECTED_BEHAVIOR: $expectedBehavior")
+            appendLine()
+            appendLine("[2. BUILD_TARGET_NAME_AND_PATH_MANIFEST]")
             appendLine("APP_NAME: $appName")
             appendLine("PACKAGE_NAME: $packageName")
             appendLine("APP_TYPE: ${if (isFloating) "FLOATING_OVERLAY_APK ($appCategory)" else "STANDALONE_ANDROID_APK ($appCategory)"}")
@@ -1246,12 +1553,12 @@ object GgufBlueprintEngine {
             appendLine("DATA_FILE_NAME: $targetDataFileName")
             appendLine("DATA_FILE_PATH: $targetDataFilePath")
             appendLine()
-            appendLine("[ALL_FILES_NAME_AND_PATH]")
+            appendLine("[3. ALL_FILES_NAME_AND_PATH]")
             artifacts.forEachIndexed { idx, item ->
                 appendLine("${idx + 1}. NAME: ${item.name} | PATH: ${item.fullPath} | ROLE: ${item.role}")
             }
             appendLine()
-            appendLine("[BUILD_COMMANDS]")
+            appendLine("[4. BUILD_COMMANDS_AND_VALIDATION]")
             appendLine("\$ mkdir -p \"$projectRootPath/src/main/java/$pkgDir\" \"$projectRootPath/src/main/res/layout\"")
             appendLine("\$ aapt2 compile --dir \"$projectRootPath/src/main/res\" -o \"$projectRootPath/build/resources.zip\"")
             appendLine("\$ kotlinc \"$projectRootPath/src/main/java/$pkgDir/MainActivity.kt\" \"$projectRootPath/src/main/java/$pkgDir/AiDynamicOverlayService.kt\" -d \"$projectRootPath/build/classes\"")
@@ -1263,9 +1570,8 @@ object GgufBlueprintEngine {
     }
 
     /**
-     * Dynamically parses any natural language user prompt into a list of `DynamicWidgetAstNode`s
-     * by splitting the prompt into semantic clauses, extracting custom labels, numbers, ranges,
-     * hex offsets, and actions without relying on rigid templates or default toggle templates.
+     * Dynamically parses any natural language user prompt into a list of `DynamicWidgetAstNode`s.
+     * Every generated widget has a concrete purpose related to the app (never arbitrary nonsense controls).
      */
     private fun parsePromptIntoDynamicAstNodes(
         cleanPrompt: String,
@@ -1331,79 +1637,77 @@ object GgufBlueprintEngine {
             return nodes
         }
 
-        // Split prompt into clauses around conjunctions and punctuation
-        val rawClauses = cleanPrompt
-            .replace(Regex("""(/storage/emulated/0/[^\s,;]+|/sdcard/[^\s,;]+)"""), "")
-            .split(Regex("""(?i)\b(?:and|aur|with|jisme|plus|along with|having|then)\b|[,;&\n]+"""))
-            .map { it.trim() }
-            .filter { it.length >= 2 }
+        // Only parse explicit clause widgets when the user explicitly mentions UI widget keywords in the prompt
+        val explicitWidgetKeywords = listOf(
+            "slider", "seekbar", "toggle", "switch", "on/off", "button", "btn",
+            "input", "textbox", "text box", "edittext", "0x"
+        )
+        val hasExplicitWidgetClauses = explicitWidgetKeywords.any { it in lower }
 
         var offsetCursor = 4
 
-        for (clause in rawClauses) {
-            val cLower = clause.lowercase(Locale.US)
-            val hexOffset = Regex("""0x[0-9a-fA-F]{1,4}""").find(clause)?.value
-                ?: String.format(Locale.US, "0x%02X", offsetCursor)
+        if (hasExplicitWidgetClauses) {
+            val rawClauses = cleanPrompt
+                .replace(Regex("""(/storage/emulated/0/[^\s,;]+|/sdcard/[^\s,;]+)"""), "")
+                .split(Regex("""(?i)\b(?:and|aur|with|jisme|plus|along with|having|then)\b|[,;&\n]+"""))
+                .map { it.trim() }
+                .filter { it.length >= 2 }
 
-            val explicitMax = Regex("""\b(\d{2,5})\b""").findAll(clause)
-                .mapNotNull { it.groupValues[1].toIntOrNull() }
-                .firstOrNull { it in 10..10000 } ?: 100
+            for (clause in rawClauses) {
+                val cLower = clause.lowercase(Locale.US)
+                val hexOffset = Regex("""0x[0-9a-fA-F]{1,4}""").find(clause)?.value
+                    ?: String.format(Locale.US, "0x%02X", offsetCursor)
 
-            val detectedType: ComponentWidgetType? = when {
-                cLower.contains("slider") || cLower.contains("seekbar") || cLower.contains("range") ||
-                    cLower.contains("level") || cLower.contains("speed") || cLower.contains("fov") ||
-                    cLower.contains("volume") || cLower.contains("brightness") || cLower.contains("sensitivity") -> ComponentWidgetType.SLIDER
+                val explicitMax = Regex("""\b(\d{2,5})\b""").findAll(clause)
+                    .mapNotNull { it.groupValues[1].toIntOrNull() }
+                    .firstOrNull { it in 10..10000 } ?: 100
 
-                cLower.contains("input") || cLower.contains("textbox") || cLower.contains("text box") ||
-                    cLower.contains("edittext") || cLower.contains("enter ") || cLower.contains("write ") ||
-                    cLower.contains("type ") || cLower.contains("password") || cLower.contains("key") ||
-                    cLower.contains("note") || cLower.contains("number") || cLower.contains("expression") ||
-                    cLower.contains("field") || cLower.contains("search") -> ComponentWidgetType.INPUT
+                val detectedType: ComponentWidgetType? = when {
+                    cLower.contains("slider") || cLower.contains("seekbar") || cLower.contains("range") ||
+                        cLower.contains("fov") || cLower.contains("sensitivity") -> ComponentWidgetType.SLIDER
 
-                cLower.contains("toggle") || cLower.contains("switch") || cLower.contains("on/off") ||
-                    (isFloating && (cLower.contains("enable") || cLower.contains("lock") || cLower.contains("boost") ||
-                        cLower.contains("bypass") || cLower.contains("aimbot") || cLower.contains("esp") ||
-                        cLower.contains("gyro"))) -> ComponentWidgetType.TOGGLE
+                    cLower.contains("input") || cLower.contains("textbox") || cLower.contains("text box") ||
+                        cLower.contains("edittext") -> ComponentWidgetType.INPUT
 
-                cLower.contains("button") || cLower.contains("btn") || cLower.contains("click") ||
-                    cLower.contains("tap") || cLower.contains("calculate") || cLower.contains("reset") ||
-                    cLower.contains("clear") || cLower.contains("save") || cLower.contains("apply") ||
-                    cLower.contains("verify") || cLower.contains("unlock") || cLower.contains("clean") ||
-                    cLower.contains("next") || cLower.contains("run") || cLower.contains("execute") ||
-                    cLower.contains("start") || cLower.contains("stop") || cLower.contains("convert") -> ComponentWidgetType.BUTTON
+                    cLower.contains("toggle") || cLower.contains("switch") || cLower.contains("on/off") ||
+                        (isFloating && (cLower.contains("bypass") || cLower.contains("aimbot") || cLower.contains("esp") ||
+                            cLower.contains("gyro"))) -> ComponentWidgetType.TOGGLE
 
-                else -> null
-            }
+                    cLower.contains("button") || cLower.contains("btn") -> ComponentWidgetType.BUTTON
 
-            if (detectedType != null) {
-                val label = extractDynamicClauseLabel(clause, detectedType, appName, nodes.size + 1)
-                val slug = label.lowercase(Locale.US).replace(Regex("[^a-z0-9]+"), "_").trim('_').ifEmpty { "node_${nodes.size + 1}" }
-                val onOffPair = deriveDynamicPayloadsForClause(cLower, detectedType, explicitMax)
-                nodes.add(
-                    DynamicWidgetAstNode(
-                        widgetType = detectedType,
-                        label = label,
-                        fieldSlug = "${slug}_${nodes.size + 1}",
-                        byteOffsetHex = hexOffset,
-                        offPayload = onOffPair.first,
-                        onPayload = onOffPair.second,
-                        initialValue = when (detectedType) {
-                            ComponentWidgetType.SLIDER -> (explicitMax / 2).coerceAtLeast(1).toString()
-                            ComponentWidgetType.INPUT -> onOffPair.second
-                            else -> "0"
-                        },
-                        sliderMax = explicitMax,
-                        bgColorHex = pickDynamicBgColor(detectedType, cLower, nodes.size),
-                        textColorHex = pickDynamicTextColor(detectedType, cLower),
-                        soundTrigger = if (detectedType == ComponentWidgetType.BUTTON) "LASER_PING" else "CLICK_POP",
-                        customLogicExpression = deriveCustomLogicExpression(cLower, detectedType, slug, explicitMax)
+                    else -> null
+                }
+
+                if (detectedType != null) {
+                    val label = extractDynamicClauseLabel(clause, detectedType, appName, nodes.size + 1)
+                    val slug = label.lowercase(Locale.US).replace(Regex("[^a-z0-9]+"), "_").trim('_').ifEmpty { "node_${nodes.size + 1}" }
+                    val onOffPair = deriveDynamicPayloadsForClause(cLower, detectedType, explicitMax)
+                    nodes.add(
+                        DynamicWidgetAstNode(
+                            widgetType = detectedType,
+                            label = label,
+                            fieldSlug = "${slug}_${nodes.size + 1}",
+                            byteOffsetHex = hexOffset,
+                            offPayload = onOffPair.first,
+                            onPayload = onOffPair.second,
+                            initialValue = when (detectedType) {
+                                ComponentWidgetType.SLIDER -> (explicitMax / 2).coerceAtLeast(1).toString()
+                                ComponentWidgetType.INPUT -> onOffPair.second
+                                else -> "0"
+                            },
+                            sliderMax = explicitMax,
+                            bgColorHex = pickDynamicBgColor(detectedType, cLower, nodes.size),
+                            textColorHex = pickDynamicTextColor(detectedType, cLower),
+                            soundTrigger = if (detectedType == ComponentWidgetType.BUTTON) "LASER_PING" else "CLICK_POP",
+                            customLogicExpression = deriveCustomLogicExpression(cLower, detectedType, slug, explicitMax)
+                        )
                     )
-                )
-                offsetCursor += 4
+                    offsetCursor += 4
+                }
             }
         }
 
-        // Synthesize domain-specific functional controls dynamically from the prompt's semantic concepts
+        // Synthesize coherent domain-specific functional controls for the app
         val semanticConcepts = inferSemanticOperationsFromPrompt(cleanPrompt, lower, appName, isFloating, appCategory)
         for (concept in semanticConcepts) {
             val alreadyCovered = nodes.any {
@@ -1473,8 +1777,8 @@ object GgufBlueprintEngine {
     }
 
     /**
-     * Dynamically infers functional operations from the prompt's semantic nouns & verbs
-     * without falling back to default toggle templates unless floating/toggle is requested.
+     * Dynamically infers coherent, purposeful operations from the app's domain category
+     * so every generated widget serves a real purpose in the app.
      */
     private fun inferSemanticOperationsFromPrompt(
         cleanPrompt: String,
@@ -1486,6 +1790,140 @@ object GgufBlueprintEngine {
         val inferred = mutableListOf<DynamicWidgetAstNode>()
 
         when (appCategory) {
+            "PATH_EXPLORER_APP" -> {
+                inferred.add(
+                    DynamicWidgetAstNode(
+                        widgetType = ComponentWidgetType.INPUT,
+                        label = "Directory / File Path",
+                        fieldSlug = "path_explorer_input",
+                        byteOffsetHex = "0x04",
+                        offPayload = "/storage/emulated/0",
+                        onPayload = "/storage/emulated/0/Download",
+                        initialValue = "/storage/emulated/0/Download",
+                        sliderMax = 100,
+                        bgColorHex = "#FFFFFF",
+                        textColorHex = "#0F172A",
+                        soundTrigger = "SOFT_TAP",
+                        customLogicExpression = "currentDirectoryPath = inputValue != null ? inputValue.trim() : \"/storage/emulated/0/Download\";"
+                    )
+                )
+                inferred.add(
+                    DynamicWidgetAstNode(
+                        widgetType = ComponentWidgetType.BUTTON,
+                        label = "Scan Directory Path",
+                        fieldSlug = "scan_path_btn",
+                        byteOffsetHex = "0x08",
+                        offPayload = "Idle",
+                        onPayload = "SCAN_PATH",
+                        initialValue = "0",
+                        sliderMax = 100,
+                        bgColorHex = "#2563EB",
+                        textColorHex = "#FFFFFF",
+                        soundTrigger = "CLICK_POP",
+                        customLogicExpression = "scanDirectoryEntries(currentDirectoryPath);"
+                    )
+                )
+                inferred.add(
+                    DynamicWidgetAstNode(
+                        widgetType = ComponentWidgetType.BUTTON,
+                        label = "Pick Random Sample Path",
+                        fieldSlug = "random_path_btn",
+                        byteOffsetHex = "0x0C",
+                        offPayload = "0",
+                        onPayload = "RANDOM_PATH",
+                        initialValue = "0",
+                        sliderMax = 100,
+                        bgColorHex = "#0288D1",
+                        textColorHex = "#FFFFFF",
+                        soundTrigger = "LASER_PING",
+                        customLogicExpression = "selectRandomSamplePath();"
+                    )
+                )
+                inferred.add(
+                    DynamicWidgetAstNode(
+                        widgetType = ComponentWidgetType.BUTTON,
+                        label = "Verify Path Permissions",
+                        fieldSlug = "verify_path_btn",
+                        byteOffsetHex = "0x10",
+                        offPayload = "Unchecked",
+                        onPayload = "VERIFIED_RW",
+                        initialValue = "0",
+                        sliderMax = 100,
+                        bgColorHex = "#16A34A",
+                        textColorHex = "#FFFFFF",
+                        soundTrigger = "SUCCESS_CHIME",
+                        customLogicExpression = "verifyPathReadWriteAccess(currentDirectoryPath);"
+                    )
+                )
+            }
+
+            "EXPENSE_TRACKER_APP" -> {
+                inferred.add(
+                    DynamicWidgetAstNode(
+                        widgetType = ComponentWidgetType.INPUT,
+                        label = "Expense Item / Category",
+                        fieldSlug = "expense_title_input",
+                        byteOffsetHex = "0x04",
+                        offPayload = "",
+                        onPayload = "Food & Travel",
+                        initialValue = "Food & Travel",
+                        sliderMax = 100,
+                        bgColorHex = "#FFFFFF",
+                        textColorHex = "#0F172A",
+                        soundTrigger = "SOFT_TAP",
+                        customLogicExpression = "expenseCategory = inputValue;"
+                    )
+                )
+                inferred.add(
+                    DynamicWidgetAstNode(
+                        widgetType = ComponentWidgetType.INPUT,
+                        label = "Amount (₹ / $)",
+                        fieldSlug = "expense_amount_input",
+                        byteOffsetHex = "0x08",
+                        offPayload = "0",
+                        onPayload = "250",
+                        initialValue = "250",
+                        sliderMax = 10000,
+                        bgColorHex = "#FFFFFF",
+                        textColorHex = "#0F172A",
+                        soundTrigger = "SOFT_TAP",
+                        customLogicExpression = "expenseAmount = Double.parseDouble(inputValue);"
+                    )
+                )
+                inferred.add(
+                    DynamicWidgetAstNode(
+                        widgetType = ComponentWidgetType.BUTTON,
+                        label = "Add Expense (+)",
+                        fieldSlug = "add_expense_btn",
+                        byteOffsetHex = "0x0C",
+                        offPayload = "0",
+                        onPayload = "ADD_EXPENSE",
+                        initialValue = "0",
+                        sliderMax = 100,
+                        bgColorHex = "#16A34A",
+                        textColorHex = "#FFFFFF",
+                        soundTrigger = "SUCCESS_CHIME",
+                        customLogicExpression = "totalExpenses += expenseAmount; saveExpenseEntry(expenseCategory, expenseAmount);"
+                    )
+                )
+                inferred.add(
+                    DynamicWidgetAstNode(
+                        widgetType = ComponentWidgetType.BUTTON,
+                        label = "Reset Ledger (0)",
+                        fieldSlug = "reset_expense_btn",
+                        byteOffsetHex = "0x10",
+                        offPayload = "0",
+                        onPayload = "Reset",
+                        initialValue = "0",
+                        sliderMax = 100,
+                        bgColorHex = "#DC2626",
+                        textColorHex = "#FFFFFF",
+                        soundTrigger = "SOFT_TAP",
+                        customLogicExpression = "totalExpenses = 0.0; clearExpenseLedger();"
+                    )
+                )
+            }
+
             "TIMER_APP" -> {
                 inferred.add(
                     DynamicWidgetAstNode(
@@ -1965,6 +2403,8 @@ object GgufBlueprintEngine {
             appCategory == "TIMER_APP" -> "00:00.00"
             appCategory == "COUNTER_APP" -> "Count: 0"
             appCategory == "CONVERTER_APP" -> "Result: 0.00"
+            appCategory == "PATH_EXPLORER_APP" -> "Path: /storage/emulated/0/Download"
+            appCategory == "EXPENSE_TRACKER_APP" -> "Total Expense: ₹0"
             isFloating -> "⚡ $overlayTitle"
             else -> "$overlayTitle — Ready"
         }
@@ -2860,11 +3300,12 @@ object GgufBlueprintEngine {
                 "input" in lower -> updatedWidgets.removeAll { it.type == ComponentWidgetType.INPUT.name }
                 else -> if (updatedWidgets.size > 1) updatedWidgets.removeAt(updatedWidgets.lastIndex)
             }
-        } else if ("rename" in lower || "naam badal" in lower) {
-            val newName = extractCustomLabel(cleanPrompt, "AI Custom App")
+        } else if ("rename" in lower || "naam badal" in lower || extractExplicitAppNameOrNull(cleanPrompt) != null) {
+            val newName = extractExplicitAppNameOrNull(cleanPrompt) ?: extractCustomLabel(cleanPrompt, "AI Custom App")
             updatedAppName = newName
             if (updatedWidgets.isNotEmpty() && updatedWidgets[0].type == ComponentWidgetType.TEXT.name) {
-                updatedWidgets[0] = updatedWidgets[0].copy(label = "⚡ $newName Panel")
+                val isPanel = updatedWidgets[0].label.contains("Panel", ignoreCase = true)
+                updatedWidgets[0] = updatedWidgets[0].copy(label = if (isPanel) "⚡ $newName Panel" else "$newName — Ready")
             }
         } else {
             val customLabel = extractCustomLabel(cleanPrompt, "Custom Action")
@@ -2946,13 +3387,76 @@ object GgufBlueprintEngine {
         return updatedAppName to updatedWidgets
     }
 
-    private fun synthesizeDynamicAppName(cleanPrompt: String, lower: String): String {
-        val quotedName = Regex("""(?:named|called|naam)\s+["']?([a-zA-Z0-9 _-]{2,24})["']?""", RegexOption.IGNORE_CASE)
-            .find(cleanPrompt)?.groupValues?.getOrNull(1)?.trim()
-        if (!quotedName.isNullOrBlank()) {
-            return quotedName
+    private fun extractExplicitAppNameOrNull(cleanPrompt: String): String? {
+        // Pattern 1: "<Name> nam/naam se [ek] [app]..." e.g. "kotlin nam se ek app bana"
+        val hindiPrefixName = Regex(
+            """(?i)\b([a-zA-Z0-9_-]{2,22})\s+(?:nam|naam)\s+(?:se|ka|ki|rakh|rakho)\b"""
+        ).find(cleanPrompt)?.groupValues?.getOrNull(1)?.trim()
+        if (!hindiPrefixName.isNullOrBlank() && hindiPrefixName.lowercase(Locale.US) !in setOf("kya", "koi", "iska", "uska", "app", "ek")) {
+            return hindiPrefixName.replaceFirstChar { if (it.isLowerCase()) it.titlecase(Locale.US) else it.toString() }
         }
-        return extractCleanAppNameFromPrompt(cleanPrompt)
+
+        // Pattern 2: "named/called/naam <Name>"
+        val englishSuffixName = Regex(
+            """(?i)(?:named|called|naam\s+badal\s+ke|naam\s+rakho|naam)\s+["']?([a-zA-Z0-9 _-]{2,24})["']?"""
+        ).find(cleanPrompt)?.groupValues?.getOrNull(1)?.trim()
+        if (!englishSuffixName.isNullOrBlank()) {
+            val cleaned = englishSuffixName
+                .replace(Regex("(?i)\\b(?:se|ek|app|banao|bana|rakho|rakh|do|de)\\b"), "")
+                .trim()
+            if (cleaned.length >= 2) {
+                return cleaned.split(Regex("\\s+")).take(3).joinToString(" ") { w ->
+                    w.replaceFirstChar { if (it.isLowerCase()) it.titlecase(Locale.US) else it.toString() }
+                }
+            }
+        }
+        return null
+    }
+
+    private fun synthesizeDynamicAppName(
+        cleanPrompt: String,
+        lower: String,
+        appCategory: String = "STANDALONE_ANDROID_APP",
+        isAutonomousClassB: Boolean = false,
+        existingProjectName: String? = null
+    ): String {
+        val explicitName = extractExplicitAppNameOrNull(cleanPrompt)
+        if (!explicitName.isNullOrBlank()) {
+            return explicitName
+        }
+
+        if ("random" in lower && "path" in lower) {
+            return "Random Path Explorer"
+        }
+
+        if (isAutonomousClassB) {
+            return when (appCategory) {
+                "PATH_EXPLORER_APP" -> if ("random" in lower) "Random Path Explorer" else "Smart Path Explorer"
+                "EXPENSE_TRACKER_APP" -> "Smart Expense Tracker"
+                "CALCULATOR_APP" -> "Smart Calculator"
+                "TIMER_APP" -> "Precision Stopwatch"
+                "NOTES_APP" -> "Quick Notes Manager"
+                "CONVERTER_APP" -> "Smart Unit Converter"
+                "COUNTER_APP" -> "Live Tally Counter"
+                "AUTH_APP" -> "Secure Auth Vault"
+                "MUSIC_APP" -> "Audio Gain Controller"
+                "FLOATING_OVERLAY_APP" -> "Floating Utility Panel"
+                else -> "Smart Path Explorer"
+            }
+        }
+
+        return when (appCategory) {
+            "PATH_EXPLORER_APP" -> if ("file" in lower && "manager" in lower) "File Manager" else if ("random" in lower) "Random Path Explorer" else "Path Explorer"
+            "EXPENSE_TRACKER_APP" -> "Expense Tracker"
+            "CALCULATOR_APP" -> if ("dark" in lower) "Dark Calculator" else if ("scientific" in lower) "Scientific Calculator" else "Calculator"
+            "TIMER_APP" -> if ("stopwatch" in lower) "Stopwatch Timer" else "Countdown Timer"
+            "NOTES_APP" -> if ("todo" in lower || "task" in lower) "Task & Todo Manager" else "Notes Pad"
+            "CONVERTER_APP" -> if ("bmi" in lower) "BMI Calculator" else "Unit Converter"
+            "COUNTER_APP" -> "Tally Counter"
+            "AUTH_APP" -> "Login & Auth"
+            "MUSIC_APP" -> "Music Equalizer"
+            else -> extractCleanAppNameFromPrompt(cleanPrompt)
+        }
     }
 
     private fun extractDynamicClauseLabel(

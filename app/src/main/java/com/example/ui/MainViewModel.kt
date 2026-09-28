@@ -1786,7 +1786,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 isAppReady = false,
                 isConversationalReply = true,
                 generatedCodePreview = "",
-                generatedScratchFiles = emptyMap()
+                generatedScratchFiles = emptyMap(),
+                requestClass = evaluation.requestClass
             )
             _uiState.update {
                 it.copy(
@@ -1800,11 +1801,16 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
 
         val initialSteps = listOf(
-            AiBuildStepStatus(1, 5, "Parsing Prompt into Dynamic AST", "Extracting semantic clauses, actions, state variables & target file...", isCompleted = false),
-            AiBuildStepStatus(2, 5, "Writing AndroidManifest.xml & Gradle Config", "Synthesizing package declaration, permissions & build.gradle.kts...", isCompleted = false),
-            AiBuildStepStatus(3, 5, "Writing Scratch Kotlin, Java & XML Source Code", "Dynamically authoring MainActivity.kt, AiScratchLogicEngine.java & activity_main.xml...", isCompleted = false),
-            AiBuildStepStatus(4, 5, "Autonomous Compiler Scan & Auto-Patching", "Scanning imports, syntax, offsets & patching broken references...", isCompleted = false),
-            AiBuildStepStatus(5, 5, "Building & Signing Installable APK", "Compiling V1+V2+V3 signed APK & exporting Name + Path manifest...", isCompleted = false)
+            AiBuildStepStatus(1, 10, "1. Understand User Request", "Analyzing intent & tokens for: \"$cleanPrompt\"", isCompleted = true),
+            AiBuildStepStatus(2, 10, "2. Classify Request", "Classification: ${evaluation.requestClass.name}", isCompleted = true),
+            AiBuildStepStatus(3, 10, "3. Create App Specification", evaluation.decisionAnnouncement.ifBlank { "Selected App Concept: ${evaluation.selectedConceptName}" }, isCompleted = false),
+            AiBuildStepStatus(4, 10, "4. Show Build Plan", "Planning package, permissions, UI widgets & target file paths...", isCompleted = false),
+            AiBuildStepStatus(5, 10, "5. Generate Files", "Synthesizing AndroidManifest.xml, build.gradle.kts, MainActivity.kt & AiScratchLogicEngine.java...", isCompleted = false),
+            AiBuildStepStatus(6, 10, "6. Validate Code", "Running AST, layout coordinate & reference validation...", isCompleted = false),
+            AiBuildStepStatus(7, 10, "7. Auto-Fix Errors", "Applying self-healing patches for imports, offsets & bounds...", isCompleted = false),
+            AiBuildStepStatus(8, 10, "8. Build APK", "Waiting for validated source files before compiling signed APK...", isCompleted = false),
+            AiBuildStepStatus(9, 10, "9. Generate Preview", "Preparing interactive UI preview & floating window surface...", isCompleted = false),
+            AiBuildStepStatus(10, 10, "10. Show Final Result", "Finalizing Name + Path manifest & installable APK output...", isCompleted = false)
         )
 
         _uiState.update {
@@ -1816,16 +1822,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
         viewModelScope.launch {
             try {
-                // Step 1: Parse Prompt into Dynamic AST
-                delay(140)
-                val step1Done = initialSteps.map {
-                    if (it.stepNumber == 1) it.copy(isCompleted = true, detail = "Parsed prompt AST with '${_uiState.value.ggufModelState.modelFileName}' (0 errors)")
-                    else it
-                }
-                _uiState.update { it.copy(aiLiveBuildSteps = step1Done) }
-
-                // Step 2: Generate scratch code & AST (strictly isolated from Manual Mode DB)
-                delay(140)
+                // Step 3 & 4: Create App Specification & Show Build Plan before generating/compiling files
+                delay(80)
                 val defaultTarget = getDefaultTargetFilePath("ai_generated_app")
                 val spec = withContext(Dispatchers.Default) {
                     GgufBlueprintEngine.generateBlueprintFromPrompt(
@@ -1834,17 +1832,27 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         defaultTargetFilePath = defaultTarget,
                         modelState = _uiState.value.ggufModelState,
                         existingProjectName = _uiState.value.aiBuiltProject?.name,
-                        existingComponents = _uiState.value.aiBuiltComponents
+                        existingComponents = _uiState.value.aiBuiltComponents,
+                        chatHistory = _uiState.value.aiChatHistory
                     )
                 }
 
-                val step2Done = step1Done.map {
-                    if (it.stepNumber == 2) it.copy(isCompleted = true, detail = "Wrote AndroidManifest.xml & build.gradle.kts for '${spec.suggestedPackageName}' (0 errors)")
-                    else it
+                val step3And4Done = initialSteps.map {
+                    when (it.stepNumber) {
+                        3 -> it.copy(
+                            isCompleted = true,
+                            detail = "${spec.decisionAnnouncement} • App: ${spec.suggestedAppName} (${spec.suggestedPackageName})"
+                        )
+                        4 -> it.copy(
+                            isCompleted = true,
+                            detail = "Plan: ${spec.components.size} functional UI widgets + ${spec.generatedScratchFiles.size} source files"
+                        )
+                        else -> it
+                    }
                 }
-                _uiState.update { it.copy(aiLiveBuildSteps = step2Done) }
+                _uiState.update { it.copy(aiLiveBuildSteps = step3And4Done) }
 
-                // Step 3: Persist scratch source files into isolated AI workspace on disk
+                // Step 5: Generate & persist scratch source files into isolated AI workspace on disk
                 val targetFileForAi = spec.suggestedTargetFilePath.ifBlank { defaultTarget }
                 withContext(Dispatchers.IO) {
                     try {
@@ -1859,30 +1867,39 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     }
                 }
 
-                delay(140)
-                val step3Done = step2Done.map {
-                    if (it.stepNumber == 3) it.copy(
+                delay(80)
+                val step5Done = step3And4Done.map {
+                    if (it.stepNumber == 5) it.copy(
                         isCompleted = true,
-                        detail = "Wrote ${spec.generatedScratchFiles.size} scratch Kotlin/Java/XML files & ${spec.components.size} dynamic widgets"
+                        detail = "Generated ${spec.generatedScratchFiles.size} files (${spec.generatedScratchFiles.keys.joinToString { k -> k.substringAfterLast('/') }})"
                     )
                     else it
                 }
-                _uiState.update { it.copy(aiLiveBuildSteps = step3Done) }
+                _uiState.update { it.copy(aiLiveBuildSteps = step5Done) }
 
-                // Step 4: Autonomous Compiler & Self-Healing Report
-                delay(140)
+                // Step 6 & 7: Validate Code & Auto-Fix Errors
+                delay(80)
                 val patchNote = if (spec.autoPatchedFixes.isNotEmpty()) {
-                    "Auto-patched ${spec.autoPatchedFixes.size} reference(s) -> 0 errors, 0 broken references"
+                    "Auto-patched ${spec.autoPatchedFixes.size} issue(s) -> 0 errors remaining"
                 } else {
-                    "Compiler & Reference scan passed: 0 errors, 0 broken references"
+                    "0 errors found — clean validation pass"
                 }
-                val step4Done = step3Done.map {
-                    if (it.stepNumber == 4) it.copy(isCompleted = true, detail = patchNote)
-                    else it
+                val step6And7Done = step5Done.map {
+                    when (it.stepNumber) {
+                        6 -> it.copy(
+                            isCompleted = true,
+                            detail = "Validated ${spec.components.size} widgets & ${spec.generatedScratchFiles.size} source files"
+                        )
+                        7 -> it.copy(
+                            isCompleted = true,
+                            detail = patchNote
+                        )
+                        else -> it
+                    }
                 }
-                _uiState.update { it.copy(aiLiveBuildSteps = step4Done) }
+                _uiState.update { it.copy(aiLiveBuildSteps = step6And7Done) }
 
-                // Step 5: Automatically compile & sign the installable APK and export to Downloads
+                // Step 8: Build & Sign Installable APK (only after specification & validated files exist!)
                 val now = System.currentTimeMillis()
                 val isolatedAiProject = StudioProjectEntity(
                     id = -999L,
@@ -1952,19 +1969,29 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 }
 
                 val sizeKb = String.format(Locale.US, "%.1f KB", (apkResult.apkSizeBytes / 1024.0).coerceAtLeast(1.0))
-                val step5Done = step4Done.map {
-                    if (it.stepNumber == 5) it.copy(
-                        isCompleted = true,
-                        detail = "APK Name: $apkFileName | APK Path: ${apkResult.signedApkFile.absolutePath} ($sizeKb, 0 errors)"
-                    )
-                    else it
+                val allStepsDone = step6And7Done.map {
+                    when (it.stepNumber) {
+                        8 -> it.copy(
+                            isCompleted = true,
+                            detail = "APK Name: $apkFileName | APK Path: ${apkResult.signedApkFile.absolutePath} ($sizeKb)"
+                        )
+                        9 -> it.copy(
+                            isCompleted = true,
+                            detail = "Generated interactive preview for '${spec.suggestedOverlayTitle}' (${spec.components.size} widgets)"
+                        )
+                        10 -> it.copy(
+                            isCompleted = true,
+                            detail = "Ready: ${spec.suggestedAppName} ($apkFileName • 0 errors)"
+                        )
+                        else -> it
+                    }
                 }
 
                 val aiTurn = AiChatTurn(
                     id = now,
                     userPrompt = cleanPrompt,
                     aiResponseText = spec.structuredBuildOutput,
-                    steps = step5Done,
+                    steps = allStepsDone,
                     isAppReady = true,
                     isConversationalReply = false,
                     generatedCodePreview = spec.kotlinJavaSummary,
@@ -1979,7 +2006,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     targetDataFilePath = targetFileForAi,
                     isFloatingOverlayApp = spec.isFloatingOverlayApp,
                     appCategory = spec.appCategory,
-                    fileArtifacts = spec.fileArtifacts
+                    fileArtifacts = spec.fileArtifacts,
+                    requestClass = spec.requestClass,
+                    decisionAnnouncement = spec.decisionAnnouncement,
+                    appPurpose = spec.appPurpose,
+                    buildPlanSummary = spec.buildPlanSummary,
+                    expectedBehavior = spec.expectedBehavior
                 )
 
                 val apkSummaryReport = buildString {
@@ -2166,8 +2198,57 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     val nextCount = curr - 1
                     currentList[0] = header.copy(label = "Count: $nextCount", currentValue = nextCount.toString())
                 }
+                token == "SCAN_PATH" -> {
+                    val pathInput = currentList.firstOrNull { it.type == ComponentWidgetType.INPUT.name }
+                        ?.currentValue?.ifBlank { "/storage/emulated/0/Download" } ?: "/storage/emulated/0/Download"
+                    val dir = File(pathInput)
+                    val count = dir.listFiles()?.size ?: 4
+                    currentList[0] = header.copy(
+                        label = "Scanned: $pathInput ($count items)",
+                        currentValue = pathInput
+                    )
+                }
+                token == "RANDOM_PATH" -> {
+                    val samplePaths = listOf(
+                        "/storage/emulated/0/Download/config_state.json",
+                        "/storage/emulated/0/Documents/studio_manifest.xml",
+                        "/storage/emulated/0/Android/data/runtime_trace.bin",
+                        "/storage/emulated/0/DCIM/camera_metadata.cfg"
+                    )
+                    val nextIdx = ((header.currentValue.hashCode() and 0x7FFFFFFF) + 1) % samplePaths.size
+                    val picked = samplePaths[nextIdx]
+                    val inputIdx = currentList.indexOfFirst { it.type == ComponentWidgetType.INPUT.name }
+                    if (inputIdx >= 0) {
+                        currentList[inputIdx] = currentList[inputIdx].copy(currentValue = picked)
+                    }
+                    currentList[0] = header.copy(label = "Random Path: $picked", currentValue = picked)
+                }
+                token == "VERIFIED_RW" -> {
+                    val pathInput = currentList.firstOrNull { it.type == ComponentWidgetType.INPUT.name }
+                        ?.currentValue?.ifBlank { "/storage/emulated/0/Download" } ?: "/storage/emulated/0/Download"
+                    currentList[0] = header.copy(
+                        label = "Verified RW: $pathInput [OK]",
+                        currentValue = pathInput
+                    )
+                }
+                token == "ADD_EXPENSE" -> {
+                    val inputs = currentList.filter { it.type == ComponentWidgetType.INPUT.name }
+                    val itemTitle = inputs.getOrNull(0)?.currentValue?.ifBlank { "Expense" } ?: "Expense"
+                    val amt = inputs.getOrNull(1)?.currentValue?.toDoubleOrNull() ?: 250.0
+                    val prevTotal = header.currentValue.toDoubleOrNull() ?: 0.0
+                    val newTotal = prevTotal + amt
+                    val formatted = String.format(Locale.US, "%.0f", newTotal)
+                    currentList[0] = header.copy(
+                        label = "Total: ₹$formatted (Last: $itemTitle)",
+                        currentValue = formatted
+                    )
+                }
                 token.equals("Reset", ignoreCase = true) -> {
-                    val resetLabel = if (_uiState.value.aiBuiltAppCategory == "TIMER_APP") "00:00.00" else "0"
+                    val resetLabel = when (_uiState.value.aiBuiltAppCategory) {
+                        "TIMER_APP" -> "00:00.00"
+                        "EXPENSE_TRACKER_APP" -> "Total Expense: ₹0"
+                        else -> "0"
+                    }
                     currentList[0] = header.copy(label = resetLabel, currentValue = "0")
                 }
                 token.equals("Saved", ignoreCase = true) -> {

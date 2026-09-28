@@ -991,6 +991,50 @@ fun StudioAiWorkspaceScreen(
                                 )
                             }
 
+                            // Autonomous Decision & App Specification Card (Class A / Class B)
+                            if (!turn.isConversationalReply && turn.decisionAnnouncement.isNotBlank()) {
+                                Surface(
+                                    color = Color(0xFFEFF6FF),
+                                    shape = RoundedCornerShape(10.dp),
+                                    border = BorderStroke(1.dp, Color(0xFF3B82F6)),
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .testTag("ai_decision_specification_card")
+                                ) {
+                                    Column(
+                                        modifier = Modifier.padding(10.dp),
+                                        verticalArrangement = Arrangement.spacedBy(4.dp)
+                                    ) {
+                                        Text(
+                                            text = "🤖 ${turn.decisionAnnouncement}",
+                                            fontSize = 12.sp,
+                                            fontWeight = FontWeight.ExtraBold,
+                                            color = Color(0xFF1E3A8A)
+                                        )
+                                        Text(
+                                            text = "App: ${turn.appName} • Package: ${turn.packageName} • Class: ${turn.requestClass.name}",
+                                            fontSize = 11.sp,
+                                            fontWeight = FontWeight.Bold,
+                                            color = Color(0xFF1E40AF)
+                                        )
+                                        if (turn.appPurpose.isNotBlank()) {
+                                            Text(
+                                                text = "Purpose: ${turn.appPurpose}",
+                                                fontSize = 11.sp,
+                                                color = Color(0xFF334155)
+                                            )
+                                        }
+                                        if (turn.expectedBehavior.isNotBlank()) {
+                                            Text(
+                                                text = "Behavior: ${turn.expectedBehavior}",
+                                                fontSize = 10.sp,
+                                                color = Color(0xFF475569)
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+
                             // Completed Steps Summary
                             if (turn.steps.isNotEmpty()) {
                                 Surface(
