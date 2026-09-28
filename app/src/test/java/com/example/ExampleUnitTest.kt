@@ -47,6 +47,39 @@ class ExampleUnitTest {
 
         val calcEval = GgufBlueprintEngine.evaluateUserPrompt("Ek Calculator app banao", existingProjectName = null)
         assertTrue("Expected specific app request to trigger app build", calcEval.shouldBuildOrUpdateApp)
+
+        // Verify conversational replies are dynamically synthesized per prompt (not fixed identical strings)
+        val howAreYouEval = GgufBlueprintEngine.evaluateUserPrompt("How are you?", existingProjectName = null)
+        assertFalse("Expected 'How are you?' not to trigger build", howAreYouEval.shouldBuildOrUpdateApp)
+        assertNotEquals(
+            "Expected dynamic bot to reply differently to 'How are you?' vs 'hi'",
+            hiEval.conversationalReply,
+            howAreYouEval.conversationalReply
+        )
+
+        val whoEval = GgufBlueprintEngine.evaluateUserPrompt("Who are you?", existingProjectName = null)
+        assertFalse("Expected 'Who are you?' not to trigger build", whoEval.shouldBuildOrUpdateApp)
+        assertNotEquals(howAreYouEval.conversationalReply, whoEval.conversationalReply)
+    }
+
+    @Test
+    fun ggufBlueprintEngine_writesScratchKotlinAndJavaFilesAndPassesZeroErrorCompilerScan() {
+        val sampleState = GgufModelState(
+            mode = StudioGenerationMode.AI_GGUF_MODE,
+            modelFileName = "coder_q4_k_m.gguf",
+            isUsingSampleFallback = false
+        )
+        val spec = GgufBlueprintEngine.generateBlueprintFromPrompt(
+            prompt = "Build a custom Sensitivity Controller with Gyro Switch, Speed Slider 250, and Apply Config Button",
+            projectId = 10L,
+            defaultTargetFilePath = "/storage/emulated/0/sens.cfg",
+            modelState = sampleState
+        )
+        assertEquals(0, spec.finalErrorCount)
+        assertTrue("Expected scratch files to be generated", spec.generatedScratchFiles.isNotEmpty())
+        assertTrue(spec.generatedScratchFiles.containsKey("AndroidManifest.xml"))
+        assertTrue(spec.generatedScratchFiles.keys.any { it.endsWith("AiDynamicOverlayService.kt") })
+        assertTrue(spec.generatedScratchFiles.keys.any { it.endsWith("AiScratchLogicEngine.java") })
     }
 
     @Test

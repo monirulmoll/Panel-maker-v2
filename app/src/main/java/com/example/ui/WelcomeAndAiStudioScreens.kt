@@ -33,6 +33,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
@@ -1056,12 +1057,47 @@ fun StudioAiWorkspaceScreen(
                                         color = if (turn.isConversationalReply) Color(0xFF312E81) else Color(0xFF065F46)
                                     )
                                     if (turn.generatedCodePreview.isNotBlank()) {
+                                        val scratchFiles = turn.generatedScratchFiles
+                                        var selectedFileKey by remember(turn.id) {
+                                            mutableStateOf(scratchFiles.keys.firstOrNull() ?: "")
+                                        }
+                                        if (scratchFiles.isNotEmpty()) {
+                                            Row(
+                                                modifier = Modifier
+                                                    .fillMaxWidth()
+                                                    .horizontalScroll(rememberScrollState()),
+                                                horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                            ) {
+                                                scratchFiles.keys.forEach { filePath ->
+                                                    val shortName = filePath.substringAfterLast('/')
+                                                    val isSelected = selectedFileKey == filePath
+                                                    Surface(
+                                                        color = if (isSelected) Color(0xFF0288D1) else Color(0xFF1E293B),
+                                                        shape = RoundedCornerShape(6.dp),
+                                                        modifier = Modifier.clickable { selectedFileKey = filePath }
+                                                    ) {
+                                                        Text(
+                                                            text = shortName,
+                                                            color = Color.White,
+                                                            fontSize = 10.sp,
+                                                            fontWeight = FontWeight.Bold,
+                                                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                                                        )
+                                                    }
+                                                }
+                                            }
+                                        }
+                                        val displayedCode = if (selectedFileKey.isNotBlank() && scratchFiles.containsKey(selectedFileKey)) {
+                                            scratchFiles[selectedFileKey].orEmpty()
+                                        } else {
+                                            turn.generatedCodePreview
+                                        }
                                         Surface(
                                             color = Color(0xFF0F172A),
                                             shape = RoundedCornerShape(8.dp),
                                             modifier = Modifier
                                                 .fillMaxWidth()
-                                                .heightIn(max = 110.dp)
+                                                .heightIn(max = 170.dp)
                                         ) {
                                             Box(
                                                 modifier = Modifier
@@ -1069,7 +1105,7 @@ fun StudioAiWorkspaceScreen(
                                                     .verticalScroll(rememberScrollState())
                                             ) {
                                                 Text(
-                                                    text = turn.generatedCodePreview,
+                                                    text = displayedCode,
                                                     fontSize = 10.sp,
                                                     fontFamily = FontFamily.Monospace,
                                                     color = Color(0xFF4ADE80)
