@@ -796,7 +796,7 @@ fun StudioCanvasBuilderScreen(
                         onPickSoundUri = { uri, isOff -> onPickSoundForComponent(selectedComponent, uri, isOff) },
                         onDuplicateComponent = { onDuplicateComponent(selectedComponent) },
                         onDeleteComponent = { onDeleteComponent(selectedComponent.id) },
-                        onTestTriggerWrite = { onTriggerComponentLive(selectedComponent, null) },
+                        onTestTriggerWrite = { editedComp -> onTriggerComponentLive(editedComp, null) },
                         onCloseDock = { onSelectComponent(null) }
                     )
                 }

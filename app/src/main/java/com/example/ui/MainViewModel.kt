@@ -541,8 +541,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 offCustomSoundPath = "",
                 targetFilePath = project.defaultTargetFilePath.ifEmpty { getDefaultTargetFilePath(project.name) },
                 byteOffsetHex = defaultOffset,
-                onPayloadHex = "0x01",
-                offPayloadHex = "0x00",
+                onPayloadHex = "On",
+                offPayloadHex = "Off",
                 sliderMax = 100,
                 currentValue = if (widgetType == ComponentWidgetType.SLIDER) "50" else "0",
                 linkUrl = if (widgetType == ComponentWidgetType.LINK) "https://google.com" else ""
@@ -959,20 +959,34 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             )
         }
 
-        updateComponent(component.copy(currentValue = nextCurrentVal))
+        val updatedComp = component.copy(currentValue = nextCurrentVal)
+        updateComponent(updatedComp)
 
-        stateWriter.applyWidgetPatchAsync(
-            appContext.filesDir,
-            "widget_${component.id}",
-            component.type,
-            component.targetFilePath,
-            component.byteOffsetHex,
-            component.offPayloadHex,
-            component.onPayloadHex,
-            payloadToWrite,
-            isTurningOn,
-            component.label
-        )
+        viewModelScope.launch(Dispatchers.IO) {
+            val ok = stateWriter.applyWidgetPatchSync(
+                appContext.filesDir,
+                "widget_${component.id}",
+                component.type,
+                component.targetFilePath,
+                component.byteOffsetHex,
+                component.offPayloadHex,
+                component.onPayloadHex,
+                payloadToWrite,
+                isTurningOn,
+                component.label
+            )
+            val resolvedFile = stateWriter.resolveTargetFile(appContext.filesDir, component.targetFilePath)
+            val preview = stateWriter.readTargetFilePreview(appContext.filesDir, component.targetFilePath)
+            _uiState.update {
+                it.copy(
+                    statusToast = if (ok) {
+                        "✅ Modified '${resolvedFile.name}' → $preview"
+                    } else {
+                        "⚠️ Cannot write '${resolvedFile.absolutePath}'. Tap 'Grant All Files Access' in Path settings!"
+                    }
+                )
+            }
+        }
     }
 
     fun toggleLivePreviewMode() {

@@ -50,7 +50,16 @@ public class LocalConfigStateWriter {
         return t;
     });
 
-    private final Handler mainHandler = new Handler(Looper.getMainLooper());
+    private final Handler mainHandler = createSafeMainHandler();
+
+    private static Handler createSafeMainHandler() {
+        try {
+            Looper looper = Looper.getMainLooper();
+            return looper != null ? new Handler(looper) : null;
+        } catch (Throwable ignored) {
+            return null;
+        }
+    }
     private final List<OnStateWriteListener> listeners = new CopyOnWriteArrayList<>();
     private final ConfigParameterSpec.StateSnapshot currentState = new ConfigParameterSpec.StateSnapshot();
     private final Map<String, String> lastWrittenByWidget = new ConcurrentHashMap<>();
@@ -119,7 +128,11 @@ public class LocalConfigStateWriter {
                         snapshot
                 );
                 if (onComplete != null) {
-                    mainHandler.post(onComplete);
+                    if (mainHandler != null) {
+                        mainHandler.post(onComplete);
+                    } else {
+                        onComplete.run();
+                    }
                 }
             } catch (IOException e) {
                 notifyWriteError(ConfigParameterSpec.KEY_OPERATING_MODE, e.getMessage());
@@ -280,57 +293,111 @@ public class LocalConfigStateWriter {
             final boolean isActive,
             final String componentLabel
     ) {
-        fileIoExecutor.execute(() -> {
-            long startNs = System.nanoTime();
-            int offset = parseOffsetString(byteOffsetHex);
-            File target = resolveTargetFile(fallbackDir, targetFilePath);
-            String safeKey = (widgetKey != null && !widgetKey.trim().isEmpty())
-                    ? widgetKey.trim()
-                    : (componentLabel != null ? componentLabel : "widget");
-            String orig = originalValue != null ? originalValue : "";
-            String chg = changeValue != null ? changeValue : "";
-            String live = liveValue != null ? liveValue : "";
-            String type = widgetType != null ? widgetType.toUpperCase(Locale.US) : "BUTTON";
+        fileIoExecutor.execute(() -> applyWidgetPatchSync(
+                fallbackDir,
+                widgetKey,
+                widgetType,
+                targetFilePath,
+                byteOffsetHex,
+                originalValue,
+                changeValue,
+                liveValue,
+                isActive,
+                componentLabel
+        ));
+    }
 
-            String replacementText = computeReplacementText(type, orig, chg, live, isActive);
-            String previousVal = lastWrittenByWidget.getOrDefault(safeKey, isActive ? orig : chg);
+    /**
+     * Synchronous version of {@link #applyWidgetPatchAsync} that directly patches the target
+     * Python (.py) / text / binary file and returns true if the write succeeded.
+     */
+    public boolean applyWidgetPatchSync(
+            final File fallbackDir,
+            final String widgetKey,
+            final String widgetType,
+            final String targetFilePath,
+            final String byteOffsetHex,
+            final String originalValue,
+            final String changeValue,
+            final String liveValue,
+            final boolean isActive,
+            final String componentLabel
+    ) {
+        long startNs = System.nanoTime();
+        int offset = parseOffsetString(byteOffsetHex);
+        File target = resolveTargetFile(fallbackDir, targetFilePath);
+        String safeKey = (widgetKey != null && !widgetKey.trim().isEmpty())
+                ? widgetKey.trim()
+                : (componentLabel != null ? componentLabel : "widget");
+        String orig = originalValue != null ? originalValue : "";
+        String chg = changeValue != null ? changeValue : "";
+        String live = liveValue != null ? liveValue : "";
+        String type = widgetType != null ? widgetType.toUpperCase(Locale.US) : "BUTTON";
+        boolean useTextScriptPatch = shouldUseTextOrScriptPatch(target, orig, chg, type);
 
-            ConfigParameterSpec.StateSnapshot snapshot;
-            synchronized (LocalConfigStateWriter.this) {
-                try {
-                    File parent = target.getParentFile();
-                    if (parent != null && !parent.exists()) {
-                        parent.mkdirs();
-                    }
+        String replacementText = computeReplacementText(type, orig, chg, live, isActive, useTextScriptPatch);
+        String previousVal = lastWrittenByWidget.getOrDefault(safeKey, isActive ? orig : chg);
 
-                    boolean useTextScriptPatch = shouldUseTextOrScriptPatch(target, orig, chg, type);
-                    if (useTextScriptPatch) {
-                        patchTextOrPythonFileLocked(target, safeKey, orig, chg, replacementText, isActive);
-                    } else {
-                        byte[] payloadBytes = parsePayloadBytes(replacementText);
-                        try (RandomAccessFile raf = new RandomAccessFile(target, "rw")) {
-                            if (raf.length() < offset + payloadBytes.length) {
-                                raf.setLength(Math.max(64, offset + payloadBytes.length));
-                            }
-                            raf.seek(offset);
-                            raf.write(payloadBytes);
+        ConfigParameterSpec.StateSnapshot snapshot;
+        synchronized (LocalConfigStateWriter.this) {
+            try {
+                File parent = target.getParentFile();
+                if (parent != null && !parent.exists()) {
+                    parent.mkdirs();
+                }
+
+                if (useTextScriptPatch) {
+                    patchTextOrPythonFileLocked(target, safeKey, orig, chg, replacementText, isActive);
+                } else {
+                    byte[] payloadBytes = parsePayloadBytes(replacementText);
+                    try (RandomAccessFile raf = new RandomAccessFile(target, "rw")) {
+                        if (raf.length() < offset + payloadBytes.length) {
+                            raf.setLength(Math.max(64, offset + payloadBytes.length));
                         }
-                        lastWrittenByWidget.put(safeKey, replacementText);
+                        raf.seek(offset);
+                        raf.write(payloadBytes);
                     }
+                    lastWrittenByWidget.put(safeKey, replacementText);
+                }
 
-                    activeFile = target;
-                    currentState.targetFilePath = target.getAbsolutePath();
-                    currentState.rawTextContent = replacementText;
-                    snapshot = currentState.copy();
-                } catch (IOException e) {
-                    notifyWriteError(componentLabel, "Write failed (" + target.getName() + "): " + e.getMessage());
-                    return;
+                activeFile = target;
+                currentState.targetFilePath = target.getAbsolutePath();
+                currentState.rawTextContent = replacementText;
+                snapshot = currentState.copy();
+            } catch (IOException e) {
+                notifyWriteError(
+                        componentLabel,
+                        "Cannot modify " + target.getAbsolutePath() + " (" + e.getMessage() + "). Grant All Files Access permission."
+                );
+                return false;
+            }
+        }
+
+        long elapsedUs = (System.nanoTime() - startNs) / 1_000L;
+        notifyWriteSuccess(componentLabel, offset, previousVal, replacementText, elapsedUs, snapshot);
+        return true;
+    }
+
+    public String readTargetFilePreview(File fallbackDir, String rawPath) {
+        try {
+            File target = resolveTargetFile(fallbackDir, rawPath);
+            if (!target.exists()) {
+                return "File not found yet (" + target.getAbsolutePath() + ")";
+            }
+            if (target.length() == 0) {
+                return "(Empty file: " + target.getName() + ")";
+            }
+            byte[] raw = new byte[(int) Math.min(target.length(), 4096)];
+            try (FileInputStream fis = new FileInputStream(target)) {
+                int read = fis.read(raw);
+                if (read > 0) {
+                    return new String(raw, 0, read, StandardCharsets.UTF_8).trim();
                 }
             }
-
-            long elapsedUs = (System.nanoTime() - startNs) / 1_000L;
-            notifyWriteSuccess(componentLabel, offset, previousVal, replacementText, elapsedUs, snapshot);
-        });
+            return "(Empty)";
+        } catch (Exception e) {
+            return "Read blocked (" + e.getMessage() + ")";
+        }
     }
 
     private String computeReplacementText(
@@ -338,7 +405,8 @@ public class LocalConfigStateWriter {
             String originalValue,
             String changeValue,
             String liveValue,
-            boolean isActive
+            boolean isActive,
+            boolean isTextScriptFile
     ) {
         String orig = originalValue != null ? originalValue : "";
         String chg = changeValue != null ? changeValue : "";
@@ -400,9 +468,21 @@ public class LocalConfigStateWriter {
 
         // BUTTON, TOGGLE, IMAGE, TEXT:
         if (isActive) {
-            return !chg.isEmpty() ? chg : (!live.isEmpty() ? live : "0x01");
+            if (!chg.isEmpty() && !(isTextScriptFile && "0x01".equalsIgnoreCase(chg.trim()))) {
+                return chg;
+            }
+            if (!live.isEmpty() && !(isTextScriptFile && "0x01".equalsIgnoreCase(live.trim()))) {
+                return live;
+            }
+            return isTextScriptFile ? "On" : "0x01";
         } else {
-            return !orig.isEmpty() ? orig : (!live.isEmpty() ? live : "0x00");
+            if (!orig.isEmpty() && !(isTextScriptFile && "0x00".equalsIgnoreCase(orig.trim()))) {
+                return orig;
+            }
+            if (!live.isEmpty() && !(isTextScriptFile && "0x00".equalsIgnoreCase(live.trim()))) {
+                return live;
+            }
+            return isTextScriptFile ? "Off" : "0x00";
         }
     }
 
@@ -469,16 +549,47 @@ public class LocalConfigStateWriter {
         String lastWritten = lastWrittenByWidget.get(widgetKey);
         if (lastWritten != null && !lastWritten.isEmpty()) {
             candidates.add(lastWritten);
+            if (!lastWritten.trim().isEmpty() && !candidates.contains(lastWritten.trim())) {
+                candidates.add(lastWritten.trim());
+            }
         }
+        String origClean = (originalValue != null && !isSingleHexOrByte(originalValue.trim())) ? originalValue : "";
+        String chgClean = (changeValue != null && !isSingleHexOrByte(changeValue.trim())) ? changeValue : "";
+
         if (isActive) {
-            if (originalValue != null && !originalValue.isEmpty()) candidates.add(originalValue);
-            if (changeValue != null && !changeValue.isEmpty()) candidates.add(changeValue);
+            if (!origClean.isEmpty()) {
+                candidates.add(origClean);
+                if (!origClean.trim().isEmpty() && !candidates.contains(origClean.trim())) {
+                    candidates.add(origClean.trim());
+                }
+            }
+            if (!chgClean.isEmpty()) {
+                candidates.add(chgClean);
+                if (!chgClean.trim().isEmpty() && !candidates.contains(chgClean.trim())) {
+                    candidates.add(chgClean.trim());
+                }
+            }
+            candidates.add("Off");
+            candidates.add("False");
         } else {
-            if (changeValue != null && !changeValue.isEmpty()) candidates.add(changeValue);
-            if (originalValue != null && !originalValue.isEmpty()) candidates.add(originalValue);
+            if (!chgClean.isEmpty()) {
+                candidates.add(chgClean);
+                if (!chgClean.trim().isEmpty() && !candidates.contains(chgClean.trim())) {
+                    candidates.add(chgClean.trim());
+                }
+            }
+            if (!origClean.isEmpty()) {
+                candidates.add(origClean);
+                if (!origClean.trim().isEmpty() && !candidates.contains(origClean.trim())) {
+                    candidates.add(origClean.trim());
+                }
+            }
+            candidates.add("On");
+            candidates.add("True");
         }
 
         String updatedContent = null;
+        // 1. Exact substring match
         for (String candidate : candidates) {
             if (candidate != null && !candidate.isEmpty() && content.contains(candidate)) {
                 int idx = content.indexOf(candidate);
@@ -489,7 +600,25 @@ public class LocalConfigStateWriter {
             }
         }
 
-        // Fallback: if Original or Change looks like a Python/script assignment (e.g. "speed = 10"),
+        // 2. Case-insensitive substring match (e.g., "off" / "OFF" / "Off" -> "On")
+        if (updatedContent == null && !content.isEmpty()) {
+            for (String candidate : candidates) {
+                if (candidate != null && !candidate.trim().isEmpty()) {
+                    Matcher ciMatcher = Pattern.compile(
+                            Pattern.quote(candidate.trim()),
+                            Pattern.CASE_INSENSITIVE | Pattern.UNICODE_CASE
+                    ).matcher(content);
+                    if (ciMatcher.find()) {
+                        updatedContent = content.substring(0, ciMatcher.start())
+                                + replacementText
+                                + content.substring(ciMatcher.end());
+                        break;
+                    }
+                }
+            }
+        }
+
+        // 3. Fallback: if Original or Change looks like a Python/script assignment (e.g. "speed = 10"),
         // match the variable assignment line in the file even if its value was already changed earlier.
         if (updatedContent == null && !content.isEmpty()) {
             String varName = extractAssignmentVarName(originalValue);
@@ -513,9 +642,10 @@ public class LocalConfigStateWriter {
             }
         }
 
+        // 4. If file only contains a single short line/word, replace it directly; otherwise append
         if (updatedContent == null) {
-            if (content.isEmpty()) {
-                updatedContent = replacementText + "\n";
+            if (content.trim().isEmpty() || !content.trim().contains("\n")) {
+                updatedContent = replacementText;
             } else if (content.endsWith("\n")) {
                 updatedContent = content + replacementText + "\n";
             } else {
@@ -526,6 +656,10 @@ public class LocalConfigStateWriter {
         try (FileOutputStream fos = new FileOutputStream(target, false)) {
             fos.write(updatedContent.getBytes(StandardCharsets.UTF_8));
             fos.flush();
+            try {
+                fos.getFD().sync();
+            } catch (Exception ignored) {
+            }
         }
         lastWrittenByWidget.put(widgetKey, replacementText);
     }
@@ -572,24 +706,59 @@ public class LocalConfigStateWriter {
         }
     }
 
-    private File resolveTargetFile(File fallbackDir, String rawPath) {
+    public File resolveTargetFile(File fallbackDir, String rawPath) {
         if (rawPath == null || rawPath.trim().isEmpty()) {
             return new File(fallbackDir, "studio_overlay_target.bin");
         }
-        File candidate = new File(rawPath.trim());
+        String clean = rawPath.trim();
+        if ((clean.startsWith("\"") && clean.endsWith("\""))
+                || (clean.startsWith("'") && clean.endsWith("'"))) {
+            clean = clean.substring(1, clean.length() - 1).trim();
+        }
+        if (clean.startsWith("file://")) {
+            clean = clean.substring("file://".length());
+        }
+        if (clean.isEmpty() || "studio_overlay_target.bin".equalsIgnoreCase(clean)) {
+            return new File(fallbackDir, "studio_overlay_target.bin");
+        }
+
+        File candidate = new File(clean);
         if (candidate.isAbsolute()) {
-            File parent = candidate.getParentFile();
-            if (parent != null && (parent.canWrite() || parent.mkdirs() || parent.exists())) {
-                try {
-                    if (!candidate.exists()) candidate.createNewFile();
-                    if (candidate.canWrite()) return candidate;
-                } catch (Exception ignored) {
+            if (candidate.exists()) {
+                return candidate;
+            }
+            // Also check /sdcard/ <-> /storage/emulated/0/ alias on Android
+            if (clean.startsWith("/sdcard/")) {
+                File emulatedAlias = new File("/storage/emulated/0/" + clean.substring("/sdcard/".length()));
+                if (emulatedAlias.exists() || (emulatedAlias.getParentFile() != null && emulatedAlias.getParentFile().exists())) {
+                    return emulatedAlias;
                 }
+            } else if (clean.startsWith("/storage/emulated/0/")) {
+                File sdcardAlias = new File("/sdcard/" + clean.substring("/storage/emulated/0/".length()));
+                if (sdcardAlias.exists()) {
+                    return sdcardAlias;
+                }
+            }
+            // If user explicitly provided /storage/... or /sdcard/..., return that exact File
+            // so we write directly to their requested location instead of silently hiding it in internal filesDir!
+            if (clean.startsWith("/storage/") || clean.startsWith("/sdcard/")) {
+                return candidate;
+            }
+            File parent = candidate.getParentFile();
+            if (parent != null && (parent.exists() || parent.mkdirs())) {
+                return candidate;
             }
             String name = candidate.getName().isEmpty() ? "studio_overlay_target.bin" : candidate.getName();
             return new File(fallbackDir, name);
         }
-        return new File(fallbackDir, rawPath.trim());
+
+        // Relative path: check if it exists on external storage (/storage/emulated/0/<clean>) first!
+        File extRoot = new File("/storage/emulated/0");
+        File extCandidate = new File(extRoot, clean);
+        if (extCandidate.exists() || (extCandidate.getParentFile() != null && extCandidate.getParentFile().exists() && clean.contains("/"))) {
+            return extCandidate;
+        }
+        return new File(fallbackDir, clean);
     }
 
     private void patchByteOffsetAndRebuildKeyValueLocked(File file, int offset, byte[] payload) throws IOException {
@@ -770,18 +939,28 @@ public class LocalConfigStateWriter {
             long durationMicros,
             ConfigParameterSpec.StateSnapshot snapshot
     ) {
-        mainHandler.post(() -> {
+        Runnable task = () -> {
             for (OnStateWriteListener listener : listeners) {
                 listener.onWriteSuccess(key, offset, oldVal, newVal, durationMicros, snapshot);
             }
-        });
+        };
+        if (mainHandler != null) {
+            mainHandler.post(task);
+        } else {
+            task.run();
+        }
     }
 
     private void notifyWriteError(String key, String message) {
-        mainHandler.post(() -> {
+        Runnable task = () -> {
             for (OnStateWriteListener listener : listeners) {
                 listener.onWriteError(key, message);
             }
-        });
+        };
+        if (mainHandler != null) {
+            mainHandler.post(task);
+        } else {
+            task.run();
+        }
     }
 }

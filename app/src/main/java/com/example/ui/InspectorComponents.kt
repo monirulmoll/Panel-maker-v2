@@ -110,7 +110,7 @@ fun PropertyInspectorBottomDock(
     onPickSoundUri: (android.net.Uri, Boolean) -> Unit = { _, _ -> },
     onDuplicateComponent: () -> Unit,
     onDeleteComponent: () -> Unit,
-    onTestTriggerWrite: () -> Unit,
+    onTestTriggerWrite: (CanvasComponentEntity) -> Unit,
     onCloseDock: () -> Unit,
     modifier: Modifier = Modifier
 ) {
@@ -331,8 +331,9 @@ fun PropertyInspectorBottomDock(
                 // Center: Crystal-Clear ON / OFF State Toggle Pill right in the Blue Bar!
                 Surface(
                     onClick = {
-                        onUpdateComponent(buildEditedComponent())
-                        onTestTriggerWrite()
+                        val latest = buildEditedComponent()
+                        onUpdateComponent(latest)
+                        onTestTriggerWrite(latest)
                     },
                     shape = RoundedCornerShape(999.dp),
                     color = if (isCurrentlyOn) Color(0xFF00C853) else Color(0xFFEF4444),
@@ -557,8 +558,9 @@ fun PropertyInspectorBottomDock(
                         iconTint = if (isCurrentlyOn) Color(0xFF00C853) else Color(0xFFEF4444),
                         isSelected = isCurrentlyOn,
                         onClick = {
-                            onUpdateComponent(buildEditedComponent())
-                            onTestTriggerWrite()
+                            val latest = buildEditedComponent()
+                            onUpdateComponent(latest)
+                            onTestTriggerWrite(latest)
                         }
                     )
                     SketchwarePropertySquareCard(
@@ -947,10 +949,65 @@ fun PropertyInspectorBottomDock(
                                         )
                                     }
 
+                                    val needsAllFilesAccess = remember(targetFileInput, component.currentValue) {
+                                        val clean = targetFileInput.trim()
+                                        val isExtPath = clean.startsWith("/storage/") || clean.startsWith("/sdcard/")
+                                        isExtPath &&
+                                            android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.R &&
+                                            !android.os.Environment.isExternalStorageManager()
+                                    }
+
+                                    if (needsAllFilesAccess) {
+                                        Button(
+                                            onClick = {
+                                                try {
+                                                    val intent = android.content.Intent(
+                                                        android.provider.Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION,
+                                                        android.net.Uri.parse("package:${context.packageName}")
+                                                    ).apply {
+                                                        addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+                                                    }
+                                                    context.startActivity(intent)
+                                                } catch (_: Exception) {
+                                                    try {
+                                                        val fallback = android.content.Intent(
+                                                            android.provider.Settings.ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION
+                                                        ).apply {
+                                                            addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+                                                        }
+                                                        context.startActivity(fallback)
+                                                    } catch (_: Exception) {
+                                                    }
+                                                }
+                                            },
+                                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFD97706)),
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .testTag("inspector_grant_all_files_button")
+                                        ) {
+                                            Text(
+                                                text = "🔓 Allow All Files Access (Required to Modify /storage/emulated/0/...)",
+                                                fontSize = 10.sp,
+                                                fontWeight = FontWeight.ExtraBold,
+                                                color = Color.White
+                                            )
+                                        }
+                                    }
+
+                                    var liveFilePreviewText by remember(targetFileInput, component.currentValue) {
+                                        mutableStateOf(
+                                            com.example.engine.LocalConfigStateWriter.getInstance()
+                                                .readTargetFilePreview(context.filesDir, targetFileInput)
+                                        )
+                                    }
+
                                     Button(
                                         onClick = {
-                                            onUpdateComponent(buildEditedComponent())
-                                            onTestTriggerWrite()
+                                            val latest = buildEditedComponent()
+                                            onUpdateComponent(latest)
+                                            onTestTriggerWrite(latest)
+                                            liveFilePreviewText = com.example.engine.LocalConfigStateWriter.getInstance()
+                                                .readTargetFilePreview(context.filesDir, latest.targetFilePath)
                                         },
                                         colors = ButtonDefaults.buttonColors(
                                             containerColor = if (isCurrentlyOn) Color(0xFF00C853) else Color(0xFF1E293B)
@@ -961,19 +1018,28 @@ fun PropertyInspectorBottomDock(
                                     ) {
                                         Icon(
                                             imageVector = Icons.Default.PowerSettingsNew,
-                                            contentDescription = "Test Original to Change Patch",
+                                            contentDescription = "Modify File Original to Change",
                                             modifier = Modifier.size(16.dp)
                                         )
                                         Spacer(modifier = Modifier.width(6.dp))
                                         Text(
                                             text = if (isCurrentlyOn)
-                                                "Active: CHANGE Applied (Tap to Revert to ORIGINAL)"
+                                                "Modify File Now: Revert to ORIGINAL (${offPayloadInput.ifBlank { "Off" }})"
                                             else
-                                                "Test Patch: Apply CHANGE to File Now",
+                                                "Modify File Now: Apply CHANGE (${onPayloadInput.ifBlank { "On" }})",
                                             fontSize = 11.sp,
                                             fontWeight = FontWeight.Bold
                                         )
                                     }
+
+                                    Text(
+                                        text = "📄 File Text Preview: $liveFilePreviewText",
+                                        fontSize = 10.sp,
+                                        fontWeight = FontWeight.SemiBold,
+                                        color = Color(0xFF0F172A),
+                                        maxLines = 2,
+                                        modifier = Modifier.testTag("inspector_live_file_preview_text")
+                                    )
                                 }
                             }
                         }
@@ -1587,10 +1653,7 @@ private fun resolvePickedTargetFilePath(
         if (docId.startsWith("primary:")) {
             val rel = docId.removePrefix("primary:")
             val candidate = java.io.File(android.os.Environment.getExternalStorageDirectory(), rel)
-            if (candidate.exists() && candidate.canWrite()) {
-                return candidate.absolutePath
-            }
-            return "/sdcard/$rel"
+            return candidate.absolutePath
         }
         if (docId.startsWith("raw:")) {
             return docId.removePrefix("raw:")

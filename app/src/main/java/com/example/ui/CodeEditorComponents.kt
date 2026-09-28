@@ -177,6 +177,11 @@ object KotlinProjectCodeEngine {
             appendLine("    val heightDp: Int,")
             appendLine("    val bgColorHex: String,")
             appendLine("    val textColorHex: String,")
+            appendLine("    val targetFilePath: String = \"\",")
+            appendLine("    val offPayloadHex: String = \"Off\",")
+            appendLine("    val onPayloadHex: String = \"On\",")
+            appendLine("    val customImagePath: String = \"\",")
+            appendLine("    val linkUrl: String = \"\",")
             appendLine("    val sliderMax: Int = 100,")
             appendLine("    val currentValue: String = \"0\"")
             appendLine(")")
@@ -184,7 +189,7 @@ object KotlinProjectCodeEngine {
             appendLine("// =====================================================================")
             appendLine("// REAL WIDGETS ON VISUAL SCREEN (${components.size} configured widget(s))")
             appendLine("// You can edit label, posXDp, posYDp, widthDp, heightDp, bgColorHex,")
-            appendLine("// textColorHex, or add new VisualWidgetSpec(...) blocks below!")
+            appendLine("// textColorHex, targetFilePath, offPayloadHex, onPayloadHex below!")
             appendLine("// =====================================================================")
             appendLine("val VISUAL_SCREEN_WIDGETS: List<VisualWidgetSpec> = listOf(")
             components.forEachIndexed { index, c ->
@@ -199,6 +204,11 @@ object KotlinProjectCodeEngine {
                 appendLine("        heightDp = ${c.heightDp},")
                 appendLine("        bgColorHex = \"${escapeKotlin(c.bgColorHex)}\",")
                 appendLine("        textColorHex = \"${escapeKotlin(c.textColorHex)}\",")
+                appendLine("        targetFilePath = \"${escapeKotlin(c.targetFilePath)}\",")
+                appendLine("        offPayloadHex = \"${escapeKotlin(c.offPayloadHex)}\",")
+                appendLine("        onPayloadHex = \"${escapeKotlin(c.onPayloadHex)}\",")
+                appendLine("        customImagePath = \"${escapeKotlin(c.customImagePath)}\",")
+                appendLine("        linkUrl = \"${escapeKotlin(c.linkUrl)}\",")
                 appendLine("        sliderMax = ${c.sliderMax},")
                 appendLine("        currentValue = \"${escapeKotlin(c.currentValue)}\"")
                 appendLine("    )$comma")
@@ -571,7 +581,7 @@ object KotlinProjectCodeEngine {
             val existing = byId[rawId]
 
             val type = extractStringProp(body, "type")?.uppercase()
-                ?.takeIf { it in setOf("BUTTON", "TOGGLE", "SLIDER", "TEXT", "INPUT", "IMAGE") }
+                ?.takeIf { it in setOf("BUTTON", "TOGGLE", "SLIDER", "TEXT", "INPUT", "IMAGE", "LINK") }
                 ?: existing?.type ?: "BUTTON"
             val label = extractStringProp(body, "label") ?: existing?.label ?: "$type #${index + 1}"
             val posX = extractIntProp(body, "posXDp") ?: existing?.posXDp ?: 10
@@ -580,9 +590,12 @@ object KotlinProjectCodeEngine {
             val height = (extractIntProp(body, "heightDp") ?: existing?.heightDp ?: 44).coerceIn(28, 320)
             val bgHex = extractStringProp(body, "bgColorHex") ?: existing?.bgColorHex ?: "#334155"
             val textHex = extractStringProp(body, "textColorHex") ?: existing?.textColorHex ?: "#FFFFFF"
+            val targetPath = extractStringProp(body, "targetFilePath") ?: existing?.targetFilePath ?: originalProject.defaultTargetFilePath
             val offsetHex = extractStringProp(body, "byteOffsetHex") ?: existing?.byteOffsetHex ?: "0x04"
-            val onHex = extractStringProp(body, "onPayloadHex") ?: existing?.onPayloadHex ?: "0x01"
-            val offHex = extractStringProp(body, "offPayloadHex") ?: existing?.offPayloadHex ?: "0x00"
+            val onHex = extractStringProp(body, "onPayloadHex") ?: existing?.onPayloadHex ?: "On"
+            val offHex = extractStringProp(body, "offPayloadHex") ?: existing?.offPayloadHex ?: "Off"
+            val imgPath = extractStringProp(body, "customImagePath") ?: existing?.customImagePath ?: ""
+            val lnkUrl = extractStringProp(body, "linkUrl") ?: existing?.linkUrl ?: ""
             val sliderMax = (extractIntProp(body, "sliderMax") ?: existing?.sliderMax ?: 100).coerceIn(1, 10000)
             val currentVal = extractStringProp(body, "currentValue") ?: existing?.currentValue ?: "0"
 
@@ -596,9 +609,12 @@ object KotlinProjectCodeEngine {
                     heightDp = height,
                     bgColorHex = bgHex,
                     textColorHex = textHex,
+                    targetFilePath = targetPath,
                     byteOffsetHex = offsetHex,
                     onPayloadHex = onHex,
                     offPayloadHex = offHex,
+                    customImagePath = imgPath,
+                    linkUrl = lnkUrl,
                     sliderMax = sliderMax,
                     currentValue = currentVal
                 )
@@ -614,10 +630,12 @@ object KotlinProjectCodeEngine {
                     heightDp = height,
                     bgColorHex = bgHex,
                     textColorHex = textHex,
-                    targetFilePath = originalProject.defaultTargetFilePath,
+                    targetFilePath = targetPath,
                     byteOffsetHex = offsetHex,
                     onPayloadHex = onHex,
                     offPayloadHex = offHex,
+                    customImagePath = imgPath,
+                    linkUrl = lnkUrl,
                     sliderMax = sliderMax,
                     currentValue = currentVal
                 )

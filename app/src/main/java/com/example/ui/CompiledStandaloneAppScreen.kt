@@ -134,6 +134,11 @@ fun CompiledStandaloneAppScreen(
     var isSystemServiceDispatched by remember { mutableStateOf(FloatingDashboardService.isRunning()) }
     var isMinimizedToGoalLogo by remember { mutableStateOf(false) }
     var hasSystemOverlayPerm by remember { mutableStateOf(Settings.canDrawOverlays(context)) }
+    var hasAllFilesPerm by remember {
+        mutableStateOf(
+            Build.VERSION.SDK_INT < Build.VERSION_CODES.R || android.os.Environment.isExternalStorageManager()
+        )
+    }
     var showOverlayPermHelper by remember { mutableStateOf(false) }
 
     var floatOffsetX by remember { mutableFloatStateOf(with(density) { 24.dp.toPx() }) }
@@ -222,6 +227,8 @@ fun CompiledStandaloneAppScreen(
             if (event == Lifecycle.Event.ON_RESUME) {
                 val nowGranted = Settings.canDrawOverlays(context)
                 hasSystemOverlayPerm = nowGranted
+                hasAllFilesPerm =
+                    Build.VERSION.SDK_INT < Build.VERSION_CODES.R || android.os.Environment.isExternalStorageManager()
                 if (nowGranted && isFloatingActive) {
                     showOverlayPermHelper = false
                     pushSpecsToRegistry()
@@ -375,46 +382,98 @@ fun CompiledStandaloneAppScreen(
             .systemBarsPadding()
             .testTag("compiled_standalone_app_screen")
     ) {
-        // CENTER: ONLY START AND STOP OPTIONS
-        Row(
+        val requiresExternalFileAccess = remember(liveComponents.toList(), hasAllFilesPerm) {
+            !hasAllFilesPerm && liveComponents.any {
+                val p = it.targetFilePath.trim()
+                p.startsWith("/storage/") || p.startsWith("/sdcard/")
+            }
+        }
+
+        // CENTER: START AND STOP OPTIONS (+ All Files Access unlock if a widget targets /storage/emulated/0/...)
+        Column(
             modifier = Modifier
                 .align(Alignment.Center)
                 .padding(horizontal = 24.dp),
-            horizontalArrangement = Arrangement.spacedBy(16.dp),
-            verticalAlignment = Alignment.CenterVertically
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
-            Button(
-                onClick = { startFloatingWindow() },
-                colors = ButtonDefaults.buttonColors(
-                    containerColor = Color(0xFF16A34A),
-                    contentColor = Color.White
-                ),
-                shape = RoundedCornerShape(12.dp),
-                contentPadding = PaddingValues(horizontal = 28.dp, vertical = 14.dp),
-                modifier = Modifier.testTag("standalone_start_floating_button")
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(16.dp),
+                verticalAlignment = Alignment.CenterVertically
             ) {
-                Text(
-                    text = "START",
-                    fontSize = 15.sp,
-                    fontWeight = FontWeight.ExtraBold
-                )
+                Button(
+                    onClick = { startFloatingWindow() },
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = Color(0xFF16A34A),
+                        contentColor = Color.White
+                    ),
+                    shape = RoundedCornerShape(12.dp),
+                    contentPadding = PaddingValues(horizontal = 28.dp, vertical = 14.dp),
+                    modifier = Modifier.testTag("standalone_start_floating_button")
+                ) {
+                    Text(
+                        text = "START",
+                        fontSize = 15.sp,
+                        fontWeight = FontWeight.ExtraBold
+                    )
+                }
+
+                Button(
+                    onClick = { stopFloatingWindow() },
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = Color(0xFFDC2626),
+                        contentColor = Color.White
+                    ),
+                    shape = RoundedCornerShape(12.dp),
+                    contentPadding = PaddingValues(horizontal = 28.dp, vertical = 14.dp),
+                    modifier = Modifier.testTag("standalone_stop_floating_button")
+                ) {
+                    Text(
+                        text = "STOP",
+                        fontSize = 15.sp,
+                        fontWeight = FontWeight.ExtraBold
+                    )
+                }
             }
 
-            Button(
-                onClick = { stopFloatingWindow() },
-                colors = ButtonDefaults.buttonColors(
-                    containerColor = Color(0xFFDC2626),
-                    contentColor = Color.White
-                ),
-                shape = RoundedCornerShape(12.dp),
-                contentPadding = PaddingValues(horizontal = 28.dp, vertical = 14.dp),
-                modifier = Modifier.testTag("standalone_stop_floating_button")
-            ) {
-                Text(
-                    text = "STOP",
-                    fontSize = 15.sp,
-                    fontWeight = FontWeight.ExtraBold
-                )
+            if (requiresExternalFileAccess) {
+                Button(
+                    onClick = {
+                        try {
+                            context.stopService(Intent(context, FloatingDashboardService::class.java))
+                        } catch (_: Exception) {
+                        }
+                        try {
+                            val intent = Intent(
+                                Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION,
+                                Uri.parse("package:${context.packageName}")
+                            ).apply {
+                                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                            }
+                            context.startActivity(intent)
+                        } catch (_: Exception) {
+                            try {
+                                val fallback = Intent(Settings.ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION).apply {
+                                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                                }
+                                context.startActivity(fallback)
+                            } catch (_: Exception) {
+                            }
+                        }
+                    },
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = Color(0xFFD97706),
+                        contentColor = Color.White
+                    ),
+                    shape = RoundedCornerShape(10.dp),
+                    modifier = Modifier.testTag("standalone_grant_all_files_button")
+                ) {
+                    Text(
+                        text = "Allow File Modify Permission (/storage/emulated/0/...)",
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.Bold
+                    )
+                }
             }
         }
 
