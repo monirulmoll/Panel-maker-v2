@@ -1,4 +1,5 @@
 import com.google.gms.googleservices.GoogleServicesPlugin.MissingGoogleServicesStrategy
+import java.security.KeyStore
 
 plugins {
   alias(libs.plugins.android.application)
@@ -113,6 +114,7 @@ dependencies {
   // implementation(libs.firebase.appcheck.debug)
   implementation(libs.kotlinx.coroutines.android)
   implementation(libs.kotlinx.coroutines.core)
+  implementation(libs.android.apksig)
   // implementation(libs.logging.interceptor)
   // implementation(libs.moshi.kotlin)
   // implementation(libs.okhttp)
@@ -133,6 +135,27 @@ dependencies {
   debugImplementation(libs.androidx.compose.ui.tooling)
   "ksp"(libs.androidx.room.compiler)
   // "ksp"(libs.moshi.kotlin.codegen)
+}
+
+run {
+  val ksFile = file("${rootDir}/debug.keystore")
+  if (ksFile.exists() && ksFile.length() > 0L) {
+    val signingAssetsDir = file("${projectDir}/src/main/assets/signing").apply { mkdirs() }
+    val pk8File = file("${signingAssetsDir}/debug_key.pk8")
+    val certFile = file("${signingAssetsDir}/debug_cert.x509.der")
+    if (!pk8File.exists() || !certFile.exists() || pk8File.length() == 0L || certFile.length() == 0L) {
+      val ks = KeyStore.getInstance("PKCS12")
+      ksFile.inputStream().use { stream ->
+        ks.load(stream, "android".toCharArray())
+      }
+      val key = ks.getKey("androiddebugkey", "android".toCharArray())
+      val cert = ks.getCertificate("androiddebugkey")
+      if (key != null && cert != null) {
+        pk8File.writeBytes(key.encoded)
+        certFile.writeBytes(cert.encoded)
+      }
+    }
+  }
 }
 
 run {

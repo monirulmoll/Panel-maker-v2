@@ -19,17 +19,26 @@ enum class ComponentWidgetType(val displayName: String) {
     SLIDER("Slider"),
     TEXT("Text Label"),
     INPUT("Text Input"),
-    IMAGE("Image Box")
+    IMAGE("Image Box"),
+    LINK("Link Opener")
 }
 
 @Entity(tableName = "studio_projects")
 data class StudioProjectEntity(
     @PrimaryKey(autoGenerate = true) val id: Long = 0,
-    val name: String,
-    val overlayTitle: String = "Floating Utility",
+    val name: String = "",
+    val packageName: String = "",
+    val projectName: String = "",
+    val overlayTitle: String = "",
+    val appLogoPath: String = "",
+    val floatingLogoPath: String = "",
+    val versionCode: Int = 1,
+    val versionName: String = "1.0",
+    val minSdk: Int = 24,
+    val targetSdk: Int = 36,
     val canvasWidthDp: Int = 280,
     val canvasHeightDp: Int = 360,
-    val canvasBgColorHex: String = "#F8FAFC",
+    val canvasBgColorHex: String = "#FFFFFF",
     val defaultTargetFilePath: String = "",
     val autoFixSize: Boolean = false,
     val createdAt: Long = System.currentTimeMillis(),
@@ -58,7 +67,8 @@ data class CanvasComponentEntity(
     val onPayloadHex: String = "0x01",
     val offPayloadHex: String = "0x00",
     val sliderMax: Int = 100,
-    val currentValue: String = "0"
+    val currentValue: String = "0",
+    val linkUrl: String = ""
 )
 
 @Entity(tableName = "config_write_audit")
@@ -131,7 +141,7 @@ interface ConfigAuditDao {
         CanvasComponentEntity::class,
         ConfigWriteAuditEntity::class
     ],
-    version = 4,
+    version = 8,
     exportSchema = false
 )
 abstract class AppDatabase : RoomDatabase() {

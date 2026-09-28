@@ -35,6 +35,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.VolumeUp
 import androidx.compose.material.icons.filled.ArrowDropDown
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Code
 import androidx.compose.material.icons.filled.Colorize
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Delete
@@ -102,6 +103,7 @@ fun PropertyInspectorBottomDock(
     component: CanvasComponentEntity,
     isAutoFixSize: Boolean = false,
     onToggleAutoFixSize: () -> Unit = {},
+    onOpenEditCode: () -> Unit = {},
     onUpdateComponent: (CanvasComponentEntity) -> Unit,
     onPickImageUri: (android.net.Uri) -> Unit,
     onPickSoundUri: (android.net.Uri, Boolean) -> Unit = { _, _ -> },
@@ -134,6 +136,8 @@ fun PropertyInspectorBottomDock(
     var offsetHexInput by remember(component.id, component.byteOffsetHex) { mutableStateOf(component.byteOffsetHex) }
     var onPayloadInput by remember(component.id, component.onPayloadHex) { mutableStateOf(component.onPayloadHex) }
     var offPayloadInput by remember(component.id, component.offPayloadHex) { mutableStateOf(component.offPayloadHex) }
+    var sliderMaxInput by remember(component.id, component.sliderMax) { mutableStateOf(component.sliderMax.toString()) }
+    var linkUrlInput by remember(component.id, component.linkUrl) { mutableStateOf(component.linkUrl) }
 
     val isCurrentlyOn = component.currentValue == "1" || component.currentValue.equals("true", ignoreCase = true)
 
@@ -147,6 +151,12 @@ fun PropertyInspectorBottomDock(
     LaunchedEffect(component.offCustomSoundPath, component.offSoundTrigger) {
         offCustomSoundPath = component.offCustomSoundPath
         offSoundTrigger = component.offSoundTrigger
+    }
+    LaunchedEffect(component.targetFilePath, component.onPayloadHex, component.offPayloadHex, component.linkUrl) {
+        targetFileInput = component.targetFilePath
+        onPayloadInput = component.onPayloadHex
+        offPayloadInput = component.offPayloadHex
+        linkUrlInput = component.linkUrl
     }
 
     val photoPickerLauncher = rememberLauncherForActivityResult(
@@ -173,6 +183,18 @@ fun PropertyInspectorBottomDock(
         }
     }
 
+    val targetFilePickerLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.GetContent()
+    ) { uri ->
+        if (uri != null) {
+            val resolvedPath = resolvePickedTargetFilePath(context, uri, component.id)
+            if (resolvedPath.isNotBlank()) {
+                targetFileInput = resolvedPath
+                onUpdateComponent(component.copy(targetFilePath = resolvedPath))
+            }
+        }
+    }
+
     val sketchWidgetId = remember(component.id, component.type) {
         val prefix = when (component.type) {
             ComponentWidgetType.TEXT.name -> "textview"
@@ -181,6 +203,7 @@ fun PropertyInspectorBottomDock(
             ComponentWidgetType.SLIDER.name -> "seekbar"
             ComponentWidgetType.INPUT.name -> "edittext"
             ComponentWidgetType.IMAGE.name -> "imageview"
+            ComponentWidgetType.LINK.name -> "linkbutton"
             else -> "view"
         }
         "${prefix}${component.id}"
@@ -330,6 +353,13 @@ fun PropertyInspectorBottomDock(
                     horizontalArrangement = Arrangement.spacedBy(6.dp)
                 ) {
                     SketchwarePropertySquareCard(
+                        title = "edit code",
+                        icon = Icons.Default.Code,
+                        iconTint = Color(0xFF00C853),
+                        isSelected = false,
+                        onClick = onOpenEditCode
+                    )
+                    SketchwarePropertySquareCard(
                         title = "auto fix",
                         icon = Icons.Default.SwapHoriz,
                         iconTint = if (isAutoFixSize) Color(0xFF00C853) else Color(0xFF0288D1),
@@ -337,11 +367,32 @@ fun PropertyInspectorBottomDock(
                         onClick = onToggleAutoFixSize
                     )
                     SketchwarePropertySquareCard(
-                        title = "inject",
-                        icon = Icons.Default.Colorize,
+                        title = "widget code",
+                        icon = Icons.Default.Code,
                         iconTint = Color(0xFF0288D1),
                         isSelected = selectedTab == 3,
                         onClick = { selectedTab = 3 }
+                    )
+                    SketchwarePropertySquareCard(
+                        title = "path",
+                        icon = Icons.Default.Code,
+                        iconTint = Color(0xFF0288D1),
+                        isSelected = selectedTab == 0,
+                        onClick = { selectedTab = 0 }
+                    )
+                    SketchwarePropertySquareCard(
+                        title = "original",
+                        icon = Icons.Default.SwapHoriz,
+                        iconTint = Color(0xFFEF4444),
+                        isSelected = selectedTab == 0,
+                        onClick = { selectedTab = 0 }
+                    )
+                    SketchwarePropertySquareCard(
+                        title = "change",
+                        icon = Icons.Default.PlayArrow,
+                        iconTint = Color(0xFF00C853),
+                        isSelected = selectedTab == 0,
+                        onClick = { selectedTab = 0 }
                     )
                     SketchwarePropertySquareCard(
                         title = "convert",
@@ -349,11 +400,13 @@ fun PropertyInspectorBottomDock(
                         iconTint = Color(0xFFF59E0B),
                         isSelected = false,
                         onClick = {
-                            // Cycles widget between TOGGLE, BUTTON, SLIDER, TEXT
+                            // Cycles widget between TOGGLE, BUTTON, SLIDER, INPUT, LINK, TEXT
                             val order = listOf(
                                 ComponentWidgetType.TOGGLE.name,
                                 ComponentWidgetType.BUTTON.name,
                                 ComponentWidgetType.SLIDER.name,
+                                ComponentWidgetType.INPUT.name,
+                                ComponentWidgetType.LINK.name,
                                 ComponentWidgetType.TEXT.name
                             )
                             val nextIdx = (order.indexOf(component.type) + 1) % order.size
@@ -458,7 +511,7 @@ fun PropertyInspectorBottomDock(
                     .background(Color.White)
                     .border(BorderStroke(0.5.dp, Color(0xFFCBD5E1)))
             ) {
-                listOf("Size & Label", "Color & Image", "Sound Trigger", "File & Offset").forEachIndexed { idx, title ->
+                listOf("Path & Change", "Color & Image", "Sound Trigger", "Widget Code").forEachIndexed { idx, title ->
                     val isSel = selectedTab == idx
                     Box(
                         modifier = Modifier
@@ -488,7 +541,7 @@ fun PropertyInspectorBottomDock(
                 verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
                 when (selectedTab) {
-                    // TAB 0: ANDROID VIEW DIMENSIONS (WIDTH / HEIGHT) & POSITION & LABEL
+                    // TAB 0: PATH + ORIGINAL + CHANGE (PYTHON / SCRIPT / FILE PATCHING), LINK URL, LABEL & DIMENSIONS
                     0 -> {
                         OutlinedTextField(
                             value = labelText,
@@ -502,6 +555,260 @@ fun PropertyInspectorBottomDock(
                                 .fillMaxWidth()
                                 .testTag("inspector_label_input")
                         )
+
+                        if (component.type == ComponentWidgetType.LINK.name) {
+                            Surface(
+                                color = Color(0xFFF0F9FF),
+                                shape = RoundedCornerShape(8.dp),
+                                border = BorderStroke(1.5.dp, Color(0xFF0288D1)),
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Column(
+                                    modifier = Modifier.padding(10.dp),
+                                    verticalArrangement = Arrangement.spacedBy(6.dp)
+                                ) {
+                                    Text(
+                                        text = "🌐 Link Opening Widget Setup (Opens URL on Click):",
+                                        style = MaterialTheme.typography.labelMedium,
+                                        fontWeight = FontWeight.ExtraBold,
+                                        color = Color(0xFF0369A1)
+                                    )
+
+                                    OutlinedTextField(
+                                        value = linkUrlInput,
+                                        onValueChange = {
+                                            linkUrlInput = it
+                                            onUpdateComponent(component.copy(linkUrl = it))
+                                        },
+                                        label = { Text("Link URL (https://...)") },
+                                        placeholder = { Text("https://t.me/your_channel") },
+                                        singleLine = true,
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .testTag("inspector_link_url_input")
+                                    )
+
+                                    Row(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .horizontalScroll(rememberScrollState()),
+                                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                    ) {
+                                        listOf(
+                                            "Telegram" to "https://t.me/",
+                                            "YouTube" to "https://youtube.com/",
+                                            "GitHub" to "https://github.com/",
+                                            "Website" to "https://google.com"
+                                        ).forEach { (chipTitle, presetUrl) ->
+                                            AssistChip(
+                                                onClick = {
+                                                    linkUrlInput = presetUrl
+                                                    onUpdateComponent(component.copy(linkUrl = presetUrl))
+                                                },
+                                                label = { Text(chipTitle, fontSize = 10.sp) },
+                                                colors = AssistChipDefaults.assistChipColors(
+                                                    containerColor = Color.White
+                                                )
+                                            )
+                                        }
+                                    }
+
+                                    Button(
+                                        onClick = {
+                                            val raw = linkUrlInput.trim().ifEmpty { "https://google.com" }
+                                            val formatted = if (raw.startsWith("http://") || raw.startsWith("https://")) raw else "https://$raw"
+                                            try {
+                                                val intent = android.content.Intent(
+                                                    android.content.Intent.ACTION_VIEW,
+                                                    android.net.Uri.parse(formatted)
+                                                ).apply {
+                                                    addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+                                                }
+                                                context.startActivity(intent)
+                                            } catch (_: Exception) {
+                                            }
+                                        },
+                                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF0288D1)),
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .testTag("inspector_test_link_button")
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Default.PlayArrow,
+                                            contentDescription = "Test Open Link",
+                                            modifier = Modifier.size(16.dp)
+                                        )
+                                        Spacer(modifier = Modifier.width(6.dp))
+                                        Text("Test Open Link Now ↗", fontWeight = FontWeight.Bold)
+                                    }
+                                }
+                            }
+                        } else {
+                            // LIVE PYTHON / SCRIPT / FILE PATCHER: PATH + ORIGINAL + CHANGE
+                            Surface(
+                                color = Color(0xFFF8FAFC),
+                                shape = RoundedCornerShape(8.dp),
+                                border = BorderStroke(1.5.dp, Color(0xFF0288D1)),
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Column(
+                                    modifier = Modifier.padding(10.dp),
+                                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                                ) {
+                                    Text(
+                                        text = when (component.type) {
+                                            ComponentWidgetType.SLIDER.name ->
+                                                "🐍 Python / File Live Slider Patch (Path • Original • Change):"
+                                            ComponentWidgetType.INPUT.name ->
+                                                "🐍 Python / File Live Value Patch (Path • Original • Change):"
+                                            else ->
+                                                "🐍 Python / File ON-OFF Patch (Path • Original • Change):"
+                                        },
+                                        style = MaterialTheme.typography.labelMedium,
+                                        fontWeight = FontWeight.ExtraBold,
+                                        color = Color(0xFF0F172A)
+                                    )
+
+                                    // 1. PATH INPUT + PICK FILE BUTTON
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                    ) {
+                                        OutlinedTextField(
+                                            value = targetFileInput,
+                                            onValueChange = {
+                                                targetFileInput = it
+                                                onUpdateComponent(component.copy(targetFilePath = it))
+                                            },
+                                            label = { Text("Path (Python .py / File Path)") },
+                                            placeholder = { Text("/sdcard/script.py") },
+                                            singleLine = true,
+                                            modifier = Modifier
+                                                .weight(1f)
+                                                .testTag("inspector_target_path_input")
+                                        )
+
+                                        Button(
+                                            onClick = { targetFilePickerLauncher.launch("*/*") },
+                                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF0288D1)),
+                                            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 12.dp),
+                                            modifier = Modifier.testTag("inspector_pick_target_file_button")
+                                        ) {
+                                            Text("Pick File", fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                                        }
+                                    }
+
+                                    // 2. ORIGINAL & CHANGE INPUTS
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                    ) {
+                                        OutlinedTextField(
+                                            value = offPayloadInput,
+                                            onValueChange = {
+                                                offPayloadInput = it
+                                                onUpdateComponent(component.copy(offPayloadHex = it))
+                                            },
+                                            label = {
+                                                Text(
+                                                    when (component.type) {
+                                                        ComponentWidgetType.SLIDER.name -> "Original (e.g. speed = 10)"
+                                                        ComponentWidgetType.INPUT.name -> "Original (e.g. key = \"old\")"
+                                                        else -> "Original (OFF / Original Area)"
+                                                    }
+                                                )
+                                            },
+                                            placeholder = {
+                                                Text(
+                                                    when (component.type) {
+                                                        ComponentWidgetType.SLIDER.name -> "speed = 10"
+                                                        else -> "aimbot = False"
+                                                    }
+                                                )
+                                            },
+                                            singleLine = true,
+                                            modifier = Modifier
+                                                .weight(1f)
+                                                .testTag("inspector_original_value_input")
+                                        )
+
+                                        OutlinedTextField(
+                                            value = onPayloadInput,
+                                            onValueChange = {
+                                                onPayloadInput = it
+                                                onUpdateComponent(component.copy(onPayloadHex = it))
+                                            },
+                                            label = {
+                                                Text(
+                                                    when (component.type) {
+                                                        ComponentWidgetType.SLIDER.name -> "Change (e.g. speed = {value})"
+                                                        ComponentWidgetType.INPUT.name -> "Change (e.g. key = \"{value}\")"
+                                                        else -> "Change (ON / Changed Area)"
+                                                    }
+                                                )
+                                            },
+                                            placeholder = {
+                                                Text(
+                                                    when (component.type) {
+                                                        ComponentWidgetType.SLIDER.name -> "speed = {value}"
+                                                        else -> "aimbot = True"
+                                                    }
+                                                )
+                                            },
+                                            singleLine = true,
+                                            modifier = Modifier
+                                                .weight(1f)
+                                                .testTag("inspector_change_value_input")
+                                        )
+                                    }
+
+                                    if (component.type == ComponentWidgetType.SLIDER.name) {
+                                        OutlinedTextField(
+                                            value = sliderMaxInput,
+                                            onValueChange = {
+                                                sliderMaxInput = it
+                                                val parsedMax = it.toIntOrNull()
+                                                if (parsedMax != null && parsedMax >= 1) {
+                                                    onUpdateComponent(component.copy(sliderMax = parsedMax.coerceIn(1, 100000)))
+                                                }
+                                            },
+                                            label = { Text("Slider Max Value (0 - Max)") },
+                                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                                            singleLine = true,
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .testTag("inspector_slider_max_input")
+                                        )
+                                    }
+
+                                    Button(
+                                        onClick = onTestTriggerWrite,
+                                        colors = ButtonDefaults.buttonColors(
+                                            containerColor = if (isCurrentlyOn) Color(0xFF00C853) else Color(0xFF1E293B)
+                                        ),
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .testTag("inspector_test_patch_button")
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Default.PowerSettingsNew,
+                                            contentDescription = "Test Original to Change Patch",
+                                            modifier = Modifier.size(16.dp)
+                                        )
+                                        Spacer(modifier = Modifier.width(6.dp))
+                                        Text(
+                                            text = if (isCurrentlyOn)
+                                                "Active: CHANGE Applied (Tap to Revert to ORIGINAL)"
+                                            else
+                                                "Test Patch: Apply CHANGE to File Now",
+                                            fontSize = 11.sp,
+                                            fontWeight = FontWeight.Bold
+                                        )
+                                    }
+                                }
+                            }
+                        }
 
                         Row(
                             modifier = Modifier.fillMaxWidth(),
@@ -928,107 +1235,78 @@ fun PropertyInspectorBottomDock(
                         }
                     }
 
-                    // TAB 3: TARGET FILE PATHS & BYTE OFFSET VALUES ("inject")
+                    // TAB 3: KOTLIN WIDGET CODE PREVIEW & FULL MULTI-FILE EDITOR LAUNCHER
                     3 -> {
-                        OutlinedTextField(
-                            value = targetFileInput,
-                            onValueChange = {
-                                targetFileInput = it
-                                onUpdateComponent(component.copy(targetFilePath = it))
-                            },
-                            label = { Text("Target Local File Path (Inject Target)") },
-                            placeholder = { Text("/data/user/0/.../files/overlay_state.bin") },
-                            singleLine = true,
-                            textStyle = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .testTag("inspector_target_file_input")
-                        )
-
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        val widgetKotlinSnippet = remember(
+                            component.id,
+                            component.type,
+                            component.label,
+                            component.posXDp,
+                            component.posYDp,
+                            component.widthDp,
+                            component.heightDp,
+                            component.bgColorHex,
+                            component.textColorHex,
+                            component.sliderMax,
+                            component.currentValue
                         ) {
-                            OutlinedTextField(
-                                value = offsetHexInput,
-                                onValueChange = {
-                                    offsetHexInput = it
-                                    onUpdateComponent(component.copy(byteOffsetHex = it))
-                                },
-                                label = { Text("Byte Offset (Hex/Int)") },
-                                placeholder = { Text("0x04") },
-                                singleLine = true,
-                                textStyle = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
-                                modifier = Modifier
-                                    .weight(1f)
-                                    .testTag("inspector_offset_input")
-                            )
-
-                            OutlinedTextField(
-                                value = onPayloadInput,
-                                onValueChange = {
-                                    onPayloadInput = it
-                                    onUpdateComponent(component.copy(onPayloadHex = it))
-                                },
-                                label = { Text("ON / Click Value") },
-                                placeholder = { Text("0x01") },
-                                singleLine = true,
-                                textStyle = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
-                                modifier = Modifier
-                                    .weight(1f)
-                                    .testTag("inspector_on_payload_input")
-                            )
-
-                            OutlinedTextField(
-                                value = offPayloadInput,
-                                onValueChange = {
-                                    offPayloadInput = it
-                                    onUpdateComponent(component.copy(offPayloadHex = it))
-                                },
-                                label = { Text("OFF Value") },
-                                placeholder = { Text("0x00") },
-                                singleLine = true,
-                                textStyle = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
-                                modifier = Modifier.weight(1f)
-                            )
+                            buildString {
+                                appendLine("VisualWidgetSpec(")
+                                appendLine("    id = ${component.id}L,")
+                                appendLine("    type = \"${component.type}\",")
+                                appendLine("    label = \"${component.label}\",")
+                                appendLine("    posXDp = ${component.posXDp}, posYDp = ${component.posYDp},")
+                                appendLine("    widthDp = ${component.widthDp}, heightDp = ${component.heightDp},")
+                                appendLine("    bgColorHex = \"${component.bgColorHex}\", textColorHex = \"${component.textColorHex}\",")
+                                appendLine("    sliderMax = ${component.sliderMax}, currentValue = \"${component.currentValue}\"")
+                                append(")")
+                            }
                         }
 
-                        FlowRow(
-                            horizontalArrangement = Arrangement.spacedBy(8.dp),
-                            verticalArrangement = Arrangement.spacedBy(4.dp)
+                        Surface(
+                            color = Color(0xFF0F172A),
+                            shape = RoundedCornerShape(8.dp),
+                            border = BorderStroke(1.dp, Color(0xFF38BDF8)),
+                            modifier = Modifier.fillMaxWidth()
                         ) {
-                            listOf("0x00", "0x04", "0x08", "0x10", "0x18", "0x20").forEach { presetOffset ->
-                                AssistChip(
-                                    onClick = {
-                                        offsetHexInput = presetOffset
-                                        onUpdateComponent(component.copy(byteOffsetHex = presetOffset))
-                                    },
-                                    label = { Text("Offset $presetOffset", fontSize = 11.sp) },
-                                    colors = AssistChipDefaults.assistChipColors()
+                            Column(
+                                modifier = Modifier.padding(10.dp),
+                                verticalArrangement = Arrangement.spacedBy(4.dp)
+                            ) {
+                                Text(
+                                    text = "Kotlin Widget Code (CanvasWorkspaceComponents.kt):",
+                                    color = Color(0xFF38BDF8),
+                                    fontSize = 11.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    fontFamily = FontFamily.Monospace
+                                )
+                                Text(
+                                    text = widgetKotlinSnippet,
+                                    color = Color(0xFFE2E8F0),
+                                    fontSize = 10.sp,
+                                    lineHeight = 14.sp,
+                                    fontFamily = FontFamily.Monospace
                                 )
                             }
                         }
 
                         Button(
-                            onClick = onTestTriggerWrite,
+                            onClick = onOpenEditCode,
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .testTag("inspector_test_write_button"),
+                                .testTag("inspector_open_edit_code_button"),
                             colors = ButtonDefaults.buttonColors(
-                                containerColor = if (isCurrentlyOn) Color(0xFF00C853) else Color(0xFF0288D1)
+                                containerColor = Color(0xFF0288D1)
                             )
                         ) {
                             Icon(
-                                imageVector = Icons.Default.PlayArrow,
-                                contentDescription = "Test Write Offset to Target File",
+                                imageVector = Icons.Default.Code,
+                                contentDescription = "Open Full Edit Code",
                                 modifier = Modifier.size(18.dp)
                             )
                             Spacer(modifier = Modifier.width(8.dp))
                             Text(
-                                text = if (isCurrentlyOn)
-                                    "Currently ON — Tap to Toggle OFF & Inject (${offPayloadInput})"
-                                else
-                                    "Currently OFF — Tap to Toggle ON & Inject (${onPayloadInput})",
+                                text = "Edit Code (All 6 Kotlin APK Files) & Compile",
                                 fontWeight = FontWeight.Bold
                             )
                         }
@@ -1089,5 +1367,41 @@ fun parseComposeColor(hex: String?, fallback: Color): Color {
         Color(android.graphics.Color.parseColor(clean))
     } catch (_: Exception) {
         fallback
+    }
+}
+
+private fun resolvePickedTargetFilePath(
+    context: android.content.Context,
+    uri: android.net.Uri,
+    componentId: Long
+): String {
+    try {
+        val docId = android.provider.DocumentsContract.getDocumentId(uri)
+        if (docId.startsWith("primary:")) {
+            val rel = docId.removePrefix("primary:")
+            val candidate = java.io.File(android.os.Environment.getExternalStorageDirectory(), rel)
+            if (candidate.exists() && candidate.canWrite()) {
+                return candidate.absolutePath
+            }
+            return "/sdcard/$rel"
+        }
+        if (docId.startsWith("raw:")) {
+            return docId.removePrefix("raw:")
+        }
+    } catch (_: Exception) {
+    }
+    return try {
+        val targetDir = java.io.File(context.filesDir, "target_scripts").apply { mkdirs() }
+        val fileName = uri.lastPathSegment?.substringAfterLast('/')?.substringAfterLast(':')
+            ?.takeIf { it.isNotBlank() } ?: "script_${componentId}.py"
+        val destFile = java.io.File(targetDir, fileName)
+        context.contentResolver.openInputStream(uri)?.use { input ->
+            java.io.FileOutputStream(destFile).use { output ->
+                input.copyTo(output)
+            }
+        }
+        destFile.absolutePath
+    } catch (_: Exception) {
+        uri.path ?: "/sdcard/script.py"
     }
 }

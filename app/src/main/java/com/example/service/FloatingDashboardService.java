@@ -20,14 +20,16 @@ import android.provider.Settings;
 import android.util.TypedValue;
 import android.view.Gravity;
 import android.view.MotionEvent;
+import android.view.VelocityTracker;
 import android.view.View;
+import android.view.ViewConfiguration;
 import android.view.WindowManager;
 import android.widget.Button;
 import android.widget.EditText;
 import android.widget.FrameLayout;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
-import android.widget.ScrollView;
+import android.widget.OverScroller;
 import android.widget.SeekBar;
 import android.widget.Switch;
 import android.widget.TextView;
@@ -95,6 +97,8 @@ public class FloatingDashboardService extends Service {
 
     @SuppressLint("ClickableViewAccessibility")
     private void showDynamicSystemOverlayWindow() {
+        DynamicOverlayRegistry.loadFromBundledAssetsIfEmpty(this);
+
         int overlayType = Build.VERSION.SDK_INT >= Build.VERSION_CODES.O
                 ? WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
                 : WindowManager.LayoutParams.TYPE_PHONE;
@@ -115,7 +119,7 @@ public class FloatingDashboardService extends Service {
         container.setOrientation(LinearLayout.VERTICAL);
 
         GradientDrawable panelBg = new GradientDrawable();
-        panelBg.setColor(parseSafeColor(DynamicOverlayRegistry.getActiveCanvasBgHex(), Color.parseColor("#1E293B")));
+        panelBg.setColor(parseSafeColor(DynamicOverlayRegistry.getActiveCanvasBgHex(), Color.WHITE));
         panelBg.setCornerRadius(dpToPx(16));
         panelBg.setStroke(dpToPx(2), Color.parseColor("#3B82F6"));
         container.setBackground(panelBg);
@@ -133,13 +137,29 @@ public class FloatingDashboardService extends Service {
 
         List<DynamicOverlayRegistry.OverlayItemSpec> specs = DynamicOverlayRegistry.getActiveItems();
 
+        String activeTitle = DynamicOverlayRegistry.getActiveOverlayTitle();
+        String displayTitle = (activeTitle != null && !activeTitle.trim().isEmpty())
+                ? activeTitle.trim()
+                : DynamicOverlayRegistry.getActiveProjectName();
+        String floatingLogoPath = DynamicOverlayRegistry.getActiveFloatingLogoPath();
+        Bitmap rawLogoBitmap = null;
+        if (floatingLogoPath != null && !floatingLogoPath.trim().isEmpty()) {
+            File lf = new File(floatingLogoPath.trim());
+            if (lf.exists()) {
+                rawLogoBitmap = BitmapFactory.decodeFile(lf.getAbsolutePath());
+            }
+        }
+
+        if (rawLogoBitmap != null) {
+            ImageView headerLogoIv = new ImageView(this);
+            headerLogoIv.setImageBitmap(createCircularBitmap(rawLogoBitmap, dpToPx(24)));
+            LinearLayout.LayoutParams logoLp = new LinearLayout.LayoutParams(dpToPx(24), dpToPx(24));
+            logoLp.rightMargin = dpToPx(8);
+            header.addView(headerLogoIv, logoLp);
+        }
+
         TextView titleTv = new TextView(this);
-        titleTv.setText(String.format(
-                Locale.US,
-                "%s (%d items)",
-                DynamicOverlayRegistry.getActiveOverlayTitle(),
-                specs.size()
-        ));
+        titleTv.setText(displayTitle != null ? displayTitle : "");
         titleTv.setTextColor(Color.WHITE);
         titleTv.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13);
         titleTv.setTypeface(Typeface.DEFAULT_BOLD);
@@ -148,54 +168,72 @@ public class FloatingDashboardService extends Service {
         LinearLayout.LayoutParams titleLp = new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f);
         header.addView(titleTv, titleLp);
 
-        // Close button
+        // Build the collapsed round ("goal" / गोल) floating logo bubble
+        int bubbleSizePx = dpToPx(58);
+        FrameLayout goalLogoBubble = new FrameLayout(this);
+        GradientDrawable bubbleBg = new GradientDrawable();
+        bubbleBg.setShape(GradientDrawable.OVAL);
+        bubbleBg.setColor(Color.parseColor("#2563EB"));
+        bubbleBg.setStroke(dpToPx(2), Color.WHITE);
+        goalLogoBubble.setBackground(bubbleBg);
+        goalLogoBubble.setVisibility(View.GONE);
+
+        if (rawLogoBitmap != null) {
+            ImageView bubbleIv = new ImageView(this);
+            bubbleIv.setImageBitmap(createCircularBitmap(rawLogoBitmap, bubbleSizePx));
+            bubbleIv.setScaleType(ImageView.ScaleType.CENTER_CROP);
+            goalLogoBubble.addView(bubbleIv, new FrameLayout.LayoutParams(
+                    FrameLayout.LayoutParams.MATCH_PARENT,
+                    FrameLayout.LayoutParams.MATCH_PARENT
+            ));
+        } else {
+            TextView bubbleTitleTv = new TextView(this);
+            String fallbackBubbleText = (displayTitle != null && !displayTitle.trim().isEmpty())
+                    ? displayTitle.trim()
+                    : "Float";
+            bubbleTitleTv.setText(fallbackBubbleText);
+            bubbleTitleTv.setTextColor(Color.WHITE);
+            bubbleTitleTv.setTextSize(TypedValue.COMPLEX_UNIT_SP, 10);
+            bubbleTitleTv.setTypeface(Typeface.DEFAULT_BOLD);
+            bubbleTitleTv.setGravity(Gravity.CENTER);
+            bubbleTitleTv.setMaxLines(2);
+            bubbleTitleTv.setEllipsize(android.text.TextUtils.TruncateAt.END);
+            bubbleTitleTv.setPadding(dpToPx(6), dpToPx(4), dpToPx(6), dpToPx(4));
+            goalLogoBubble.addView(bubbleTitleTv, new FrameLayout.LayoutParams(
+                    FrameLayout.LayoutParams.MATCH_PARENT,
+                    FrameLayout.LayoutParams.MATCH_PARENT,
+                    Gravity.CENTER
+            ));
+        }
+
+        // Clicking ✕ minimizes the panel into the round ("goal") logo bubble instead of closing everything!
         TextView closeBtn = new TextView(this);
         closeBtn.setText("✕");
         closeBtn.setTextColor(Color.WHITE);
         closeBtn.setTextSize(TypedValue.COMPLEX_UNIT_SP, 14);
         closeBtn.setPadding(dpToPx(10), dpToPx(4), dpToPx(10), dpToPx(4));
-        closeBtn.setOnClickListener(v -> stopSelf());
+        closeBtn.setOnClickListener(v -> {
+            setOverlayFocusable(false);
+            container.setVisibility(View.GONE);
+            goalLogoBubble.setVisibility(View.VISIBLE);
+            if (floatingRootView != null && windowManager != null) {
+                windowManager.updateViewLayout(floatingRootView, overlayLayoutParams);
+            }
+        });
         header.addView(closeBtn);
 
         // Free / Auto-Fixed Scrollable Canvas Frame matching user's Studio Error workspace
         boolean isAutoFix = DynamicOverlayRegistry.isActiveAutoFixSize();
         FrameLayout canvasFrame = new FrameLayout(this);
-        final int[] currentCanvasW = new int[]{dpToPx(DynamicOverlayRegistry.getActiveCanvasWidthDp())};
-        final int[] currentCanvasH = new int[]{dpToPx(DynamicOverlayRegistry.getActiveCanvasHeightDp())};
-        LinearLayout.LayoutParams canvasLp = new LinearLayout.LayoutParams(currentCanvasW[0], currentCanvasH[0]);
+        int currentCanvasW = dpToPx(DynamicOverlayRegistry.getActiveCanvasWidthDp());
+        int currentCanvasH = dpToPx(DynamicOverlayRegistry.getActiveCanvasHeightDp());
+        LinearLayout.LayoutParams canvasLp = new LinearLayout.LayoutParams(currentCanvasW, currentCanvasH);
 
-        // Custom ScrollView:
-        // 1. Scroll is 0 (disabled) as long as all widgets fit inside the visible window.
-        // 2. Scroll turns ON automatically as soon as any widget goes outside the visual window (top or bottom).
-        // 3. OVER_SCROLL_NEVER eliminates rubber-band shaking/jittering ("kaanp").
-        ScrollView scrollView = new ScrollView(this) {
-            private boolean isOverflowingVisualWindow() {
-                if (getChildCount() == 0) return false;
-                View child = getChildAt(0);
-                return child.getHeight() > getHeight();
-            }
-
-            @Override
-            public boolean onInterceptTouchEvent(MotionEvent ev) {
-                if (!isOverflowingVisualWindow()) {
-                    if (getScrollY() != 0) scrollTo(0, 0);
-                    return false;
-                }
-                return super.onInterceptTouchEvent(ev);
-            }
-
-            @Override
-            public boolean onTouchEvent(MotionEvent ev) {
-                if (!isOverflowingVisualWindow()) {
-                    if (getScrollY() != 0) scrollTo(0, 0);
-                    return false;
-                }
-                return super.onTouchEvent(ev);
-            }
-        };
-        scrollView.setFillViewport(false);
-        scrollView.setOverScrollMode(View.OVER_SCROLL_NEVER);
-        scrollView.setVerticalScrollBarEnabled(true);
+        // Jitter-Free OverflowOnlyScrollLayout (extends FrameLayout, NOT ScrollView):
+        // 1. Completely bypasses OEM/Android 12+ ScrollView StretchEdgeEffect & SpringOverScroller that cause shaking!
+        // 2. Scroll is strictly 0 (disabled) while all widgets fit inside the visual window.
+        // 3. Scroll turns ON automatically with hard-clamped [0..maxRange] bounds as soon as any widget goes outside.
+        OverflowOnlyScrollLayout scrollView = new OverflowOnlyScrollLayout(this);
         FrameLayout.LayoutParams scrollLp = new FrameLayout.LayoutParams(
                 FrameLayout.LayoutParams.MATCH_PARENT,
                 FrameLayout.LayoutParams.MATCH_PARENT
@@ -244,7 +282,7 @@ public class FloatingDashboardService extends Service {
                 itemLp.topMargin = dpToPx(yDp);
                 freeCanvas.addView(childView, itemLp);
             }
-            if (minTopDp < 0 || dpToPx(maxBottomDp) > currentCanvasH[0]) {
+            if (minTopDp < 0 || dpToPx(maxBottomDp) > currentCanvasH) {
                 freeCanvas.setPadding(0, 0, 0, dpToPx(8));
             }
             scrollView.addView(freeCanvas, new FrameLayout.LayoutParams(
@@ -255,74 +293,31 @@ public class FloatingDashboardService extends Service {
 
         canvasFrame.addView(scrollView, scrollLp);
 
-        // Image-Crop Style Endpoint Resize Handle at Bottom-Right Corner (Hidden & disabled when Auto Fix Size is ON)
-        if (!isAutoFix) {
-            TextView resizeHandle = new TextView(this);
-            resizeHandle.setText("↘");
-            resizeHandle.setTextColor(Color.WHITE);
-            resizeHandle.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12);
-            resizeHandle.setTypeface(Typeface.DEFAULT_BOLD);
-            resizeHandle.setGravity(Gravity.CENTER);
-            GradientDrawable handleBg = new GradientDrawable();
-            handleBg.setColor(Color.parseColor("#0288D1"));
-            handleBg.setCornerRadius(dpToPx(6));
-            handleBg.setStroke(dpToPx(1), Color.WHITE);
-            resizeHandle.setBackground(handleBg);
-
-            FrameLayout.LayoutParams handleLp = new FrameLayout.LayoutParams(dpToPx(24), dpToPx(24));
-            handleLp.gravity = Gravity.BOTTOM | Gravity.END;
-            canvasFrame.addView(resizeHandle, handleLp);
-
-            resizeHandle.setOnTouchListener(new View.OnTouchListener() {
-                private float lastRawX;
-                private float lastRawY;
-
-                @Override
-                public boolean onTouch(View v, MotionEvent event) {
-                    switch (event.getActionMasked()) {
-                        case MotionEvent.ACTION_DOWN:
-                            lastRawX = event.getRawX();
-                            lastRawY = event.getRawY();
-                            return true;
-                        case MotionEvent.ACTION_MOVE:
-                            int dx = Math.round(event.getRawX() - lastRawX);
-                            int dy = Math.round(event.getRawY() - lastRawY);
-                            lastRawX = event.getRawX();
-                            lastRawY = event.getRawY();
-                            currentCanvasW[0] = Math.max(dpToPx(170), Math.min(dpToPx(420), currentCanvasW[0] + dx));
-                            currentCanvasH[0] = Math.max(dpToPx(160), Math.min(dpToPx(620), currentCanvasH[0] + dy));
-                            LinearLayout.LayoutParams updatedLp = new LinearLayout.LayoutParams(currentCanvasW[0], currentCanvasH[0]);
-                            canvasFrame.setLayoutParams(updatedLp);
-                            if (floatingRootView != null && windowManager != null) {
-                                windowManager.updateViewLayout(floatingRootView, overlayLayoutParams);
-                            }
-                            return true;
-                    }
-                    return false;
-                }
-            });
-        }
-
         header.setOnTouchListener(new View.OnTouchListener() {
-            private float lastRawX;
-            private float lastRawY;
+            private float downRawX;
+            private float downRawY;
+            private int startWinX;
+            private int startWinY;
 
             @Override
             public boolean onTouch(View v, MotionEvent event) {
                 switch (event.getActionMasked()) {
                     case MotionEvent.ACTION_DOWN:
-                        lastRawX = event.getRawX();
-                        lastRawY = event.getRawY();
+                        downRawX = event.getRawX();
+                        downRawY = event.getRawY();
+                        startWinX = overlayLayoutParams.x;
+                        startWinY = overlayLayoutParams.y;
                         setOverlayFocusable(false);
                         return true;
                     case MotionEvent.ACTION_MOVE:
-                        int dx = Math.round(event.getRawX() - lastRawX);
-                        int dy = Math.round(event.getRawY() - lastRawY);
-                        lastRawX = event.getRawX();
-                        lastRawY = event.getRawY();
-                        if (floatingRootView != null && windowManager != null) {
-                            overlayLayoutParams.x = Math.max(0, overlayLayoutParams.x + dx);
-                            overlayLayoutParams.y = Math.max(32, overlayLayoutParams.y + dy);
+                        int totalDx = Math.round(event.getRawX() - downRawX);
+                        int totalDy = Math.round(event.getRawY() - downRawY);
+                        int nextX = Math.max(0, startWinX + totalDx);
+                        int nextY = Math.max(32, startWinY + totalDy);
+                        if (floatingRootView != null && windowManager != null
+                                && (nextX != overlayLayoutParams.x || nextY != overlayLayoutParams.y)) {
+                            overlayLayoutParams.x = nextX;
+                            overlayLayoutParams.y = nextY;
                             windowManager.updateViewLayout(floatingRootView, overlayLayoutParams);
                         }
                         return true;
@@ -337,8 +332,89 @@ public class FloatingDashboardService extends Service {
         ));
         container.addView(canvasFrame, canvasLp);
 
-        floatingRootView = container;
+        // Touch listener on the round ("goal") floating logo bubble: drag to move, tap to expand back!
+        final int bubbleTouchSlop = ViewConfiguration.get(this).getScaledTouchSlop();
+        goalLogoBubble.setOnTouchListener(new View.OnTouchListener() {
+            private float downRawX;
+            private float downRawY;
+            private int startWinX;
+            private int startWinY;
+            private boolean wasDragged;
+
+            @Override
+            public boolean onTouch(View v, MotionEvent event) {
+                switch (event.getActionMasked()) {
+                    case MotionEvent.ACTION_DOWN:
+                        downRawX = event.getRawX();
+                        downRawY = event.getRawY();
+                        startWinX = overlayLayoutParams.x;
+                        startWinY = overlayLayoutParams.y;
+                        wasDragged = false;
+                        return true;
+                    case MotionEvent.ACTION_MOVE:
+                        int totalDx = Math.round(event.getRawX() - downRawX);
+                        int totalDy = Math.round(event.getRawY() - downRawY);
+                        if (Math.abs(totalDx) > bubbleTouchSlop || Math.abs(totalDy) > bubbleTouchSlop) {
+                            wasDragged = true;
+                        }
+                        int nextX = Math.max(0, startWinX + totalDx);
+                        int nextY = Math.max(32, startWinY + totalDy);
+                        if (floatingRootView != null && windowManager != null
+                                && (nextX != overlayLayoutParams.x || nextY != overlayLayoutParams.y)) {
+                            overlayLayoutParams.x = nextX;
+                            overlayLayoutParams.y = nextY;
+                            windowManager.updateViewLayout(floatingRootView, overlayLayoutParams);
+                        }
+                        return true;
+                    case MotionEvent.ACTION_UP:
+                        if (!wasDragged) {
+                            goalLogoBubble.setVisibility(View.GONE);
+                            container.setVisibility(View.VISIBLE);
+                            if (floatingRootView != null && windowManager != null) {
+                                windowManager.updateViewLayout(floatingRootView, overlayLayoutParams);
+                            }
+                        }
+                        return true;
+                }
+                return false;
+            }
+        });
+
+        FrameLayout rootWrapper = new FrameLayout(this);
+        rootWrapper.addView(container, new FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.WRAP_CONTENT,
+                FrameLayout.LayoutParams.WRAP_CONTENT
+        ));
+        rootWrapper.addView(goalLogoBubble, new FrameLayout.LayoutParams(
+                bubbleSizePx,
+                bubbleSizePx
+        ));
+
+        floatingRootView = rootWrapper;
         windowManager.addView(floatingRootView, overlayLayoutParams);
+    }
+
+    private Bitmap createCircularBitmap(Bitmap src, int sizePx) {
+        if (src == null || sizePx <= 0) return null;
+        Bitmap scaled = Bitmap.createScaledBitmap(src, sizePx, sizePx, true);
+        Bitmap output = Bitmap.createBitmap(sizePx, sizePx, Bitmap.Config.ARGB_8888);
+        android.graphics.Canvas canvas = new android.graphics.Canvas(output);
+        android.graphics.Paint paint = new android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG);
+        float radius = sizePx / 2f;
+        android.graphics.BitmapShader shader = new android.graphics.BitmapShader(
+                scaled,
+                android.graphics.Shader.TileMode.CLAMP,
+                android.graphics.Shader.TileMode.CLAMP
+        );
+        paint.setShader(shader);
+        canvas.drawCircle(radius, radius, radius - dpToPx(2), paint);
+
+        android.graphics.Paint borderPaint = new android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG);
+        borderPaint.setStyle(android.graphics.Paint.Style.STROKE);
+        borderPaint.setColor(Color.WHITE);
+        borderPaint.setStrokeWidth(dpToPx(2));
+        canvas.drawCircle(radius, radius, radius - dpToPx(1), borderPaint);
+        return output;
     }
 
     private View buildDynamicComponentView(DynamicOverlayRegistry.OverlayItemSpec spec) {
@@ -418,11 +494,16 @@ public class FloatingDashboardService extends Service {
                         SoundTriggerPlayer.playSoundTrigger(this, btn, spec.offSoundTrigger, spec.offCustomSoundPath);
                     }
                     String payload = isChecked ? spec.onPayloadHex : spec.offPayloadHex;
-                    LocalConfigStateWriter.getInstance().writeCustomComponentOffsetAsync(
+                    LocalConfigStateWriter.getInstance().applyWidgetPatchAsync(
                             getFilesDir(),
+                            "widget_" + spec.id,
+                            "TOGGLE",
                             spec.targetFilePath,
                             spec.byteOffsetHex,
+                            spec.offPayloadHex,
+                            spec.onPayloadHex,
                             payload,
+                            isChecked,
                             spec.label
                     );
                 });
@@ -468,6 +549,7 @@ public class FloatingDashboardService extends Service {
                     @Override
                     public void onProgressChanged(SeekBar sb, int progress, boolean fromUser) {
                         labelTv.setText(spec.label + " (0-" + maxVal + "): " + progress);
+                        spec.currentValue = String.valueOf(progress);
                         if (fromUser) {
                             if (progress == 0) {
                                 SoundTriggerPlayer.playSoundTrigger(
@@ -477,11 +559,16 @@ public class FloatingDashboardService extends Service {
                                         spec.offCustomSoundPath
                                 );
                             }
-                            LocalConfigStateWriter.getInstance().writeCustomComponentOffsetAsync(
+                            LocalConfigStateWriter.getInstance().applyWidgetPatchAsync(
                                     getFilesDir(),
+                                    "widget_" + spec.id,
+                                    "SLIDER",
                                     spec.targetFilePath,
                                     spec.byteOffsetHex,
+                                    spec.offPayloadHex,
+                                    spec.onPayloadHex,
                                     String.valueOf(progress),
+                                    progress > 0,
                                     spec.label
                             );
                         }
@@ -517,7 +604,7 @@ public class FloatingDashboardService extends Service {
             case "INPUT": {
                 EditText et = new EditText(this);
                 et.setHint(spec.label);
-                et.setText(spec.currentValue);
+                et.setText("0".equals(spec.currentValue) ? "" : spec.currentValue);
                 et.setTextColor(txtColor);
                 et.setHintTextColor(Color.LTGRAY);
                 et.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12);
@@ -528,6 +615,32 @@ public class FloatingDashboardService extends Service {
                     setOverlayFocusable(true);
                     SoundTriggerPlayer.playSoundTrigger(this, v, spec.soundTrigger, spec.customSoundPath);
                 });
+                et.addTextChangedListener(new android.text.TextWatcher() {
+                    @Override
+                    public void beforeTextChanged(CharSequence s, int start, int count, int after) {}
+
+                    @Override
+                    public void onTextChanged(CharSequence s, int start, int before, int count) {}
+
+                    @Override
+                    public void afterTextChanged(android.text.Editable s) {
+                        String val = s != null ? s.toString() : "";
+                        spec.currentValue = val;
+                        boolean isActive = !val.trim().isEmpty() && !"0".equals(val.trim()) && !"false".equalsIgnoreCase(val.trim());
+                        LocalConfigStateWriter.getInstance().applyWidgetPatchAsync(
+                                getFilesDir(),
+                                "widget_" + spec.id,
+                                "INPUT",
+                                spec.targetFilePath,
+                                spec.byteOffsetHex,
+                                spec.offPayloadHex,
+                                spec.onPayloadHex,
+                                val,
+                                isActive,
+                                spec.label
+                        );
+                    }
+                });
                 et.setOnEditorActionListener((v, actionId, event) -> {
                     String val = v.getText().toString();
                     boolean isOff = val.trim().isEmpty() || "0".equals(val.trim()) || "false".equalsIgnoreCase(val.trim());
@@ -536,17 +649,76 @@ public class FloatingDashboardService extends Service {
                     } else {
                         SoundTriggerPlayer.playSoundTrigger(this, v, spec.soundTrigger, spec.customSoundPath);
                     }
-                    LocalConfigStateWriter.getInstance().writeCustomComponentOffsetAsync(
+                    LocalConfigStateWriter.getInstance().applyWidgetPatchAsync(
                             getFilesDir(),
+                            "widget_" + spec.id,
+                            "INPUT",
                             spec.targetFilePath,
                             spec.byteOffsetHex,
+                            spec.offPayloadHex,
+                            spec.onPayloadHex,
                             val,
+                            !isOff,
                             spec.label
                     );
                     setOverlayFocusable(false);
                     return true;
                 });
                 return et;
+            }
+            case "LINK": {
+                LinearLayout linkRow = new LinearLayout(this);
+                linkRow.setOrientation(LinearLayout.HORIZONTAL);
+                linkRow.setGravity(Gravity.CENTER_VERTICAL);
+                linkRow.setPadding(dpToPx(10), dpToPx(4), dpToPx(10), dpToPx(4));
+
+                GradientDrawable linkBg = new GradientDrawable();
+                linkBg.setColor(bgColor);
+                linkBg.setCornerRadius(dpToPx(8));
+                linkBg.setStroke(dpToPx(2), Color.parseColor("#38BDF8"));
+                linkRow.setBackground(linkBg);
+
+                TextView iconTv = new TextView(this);
+                iconTv.setText("🌐");
+                iconTv.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12);
+                LinearLayout.LayoutParams iconLp = new LinearLayout.LayoutParams(
+                        LinearLayout.LayoutParams.WRAP_CONTENT,
+                        LinearLayout.LayoutParams.WRAP_CONTENT
+                );
+                iconLp.rightMargin = dpToPx(6);
+
+                TextView labelTv = new TextView(this);
+                labelTv.setText(spec.label);
+                labelTv.setTextColor(txtColor);
+                labelTv.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12);
+                labelTv.setTypeface(Typeface.DEFAULT_BOLD);
+                labelTv.setSingleLine(true);
+                LinearLayout.LayoutParams labelLp = new LinearLayout.LayoutParams(
+                        0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f
+                );
+
+                TextView openBadge = new TextView(this);
+                openBadge.setText("OPEN ↗");
+                openBadge.setTextColor(Color.WHITE);
+                openBadge.setTextSize(TypedValue.COMPLEX_UNIT_SP, 9);
+                openBadge.setTypeface(Typeface.DEFAULT_BOLD);
+                openBadge.setPadding(dpToPx(7), dpToPx(2), dpToPx(7), dpToPx(2));
+                GradientDrawable badgeBg = new GradientDrawable();
+                badgeBg.setColor(Color.parseColor("#0288D1"));
+                badgeBg.setCornerRadius(dpToPx(99));
+                openBadge.setBackground(badgeBg);
+
+                View.OnClickListener openClick = v -> {
+                    SoundTriggerPlayer.playSoundTrigger(this, linkRow, spec.soundTrigger, spec.customSoundPath);
+                    openLinkUrl(spec.linkUrl != null && !spec.linkUrl.trim().isEmpty() ? spec.linkUrl : spec.onPayloadHex);
+                };
+                linkRow.setOnClickListener(openClick);
+                openBadge.setOnClickListener(openClick);
+
+                linkRow.addView(iconTv, iconLp);
+                linkRow.addView(labelTv, labelLp);
+                linkRow.addView(openBadge);
+                return linkRow;
             }
             case "IMAGE": {
                 ImageView iv = new ImageView(this);
@@ -572,11 +744,17 @@ public class FloatingDashboardService extends Service {
                     } else {
                         SoundTriggerPlayer.playSoundTrigger(this, v, spec.offSoundTrigger, spec.offCustomSoundPath);
                     }
-                    LocalConfigStateWriter.getInstance().writeCustomComponentOffsetAsync(
+                    String payload = isImgOn[0] ? spec.onPayloadHex : spec.offPayloadHex;
+                    LocalConfigStateWriter.getInstance().applyWidgetPatchAsync(
                             getFilesDir(),
+                            "widget_" + spec.id,
+                            "IMAGE",
                             spec.targetFilePath,
                             spec.byteOffsetHex,
-                            isImgOn[0] ? spec.onPayloadHex : spec.offPayloadHex,
+                            spec.offPayloadHex,
+                            spec.onPayloadHex,
+                            payload,
+                            isImgOn[0],
                             spec.label
                     );
                 });
@@ -600,11 +778,17 @@ public class FloatingDashboardService extends Service {
                     } else {
                         SoundTriggerPlayer.playSoundTrigger(this, v, spec.offSoundTrigger, spec.offCustomSoundPath);
                     }
-                    LocalConfigStateWriter.getInstance().writeCustomComponentOffsetAsync(
+                    String payload = isTxtOn[0] ? spec.onPayloadHex : spec.offPayloadHex;
+                    LocalConfigStateWriter.getInstance().applyWidgetPatchAsync(
                             getFilesDir(),
+                            "widget_" + spec.id,
+                            "TEXT",
                             spec.targetFilePath,
                             spec.byteOffsetHex,
-                            isTxtOn[0] ? spec.onPayloadHex : spec.offPayloadHex,
+                            spec.offPayloadHex,
+                            spec.onPayloadHex,
+                            payload,
+                            isTxtOn[0],
                             spec.label
                     );
                 });
@@ -668,12 +852,20 @@ public class FloatingDashboardService extends Service {
                     } else {
                         SoundTriggerPlayer.playSoundTrigger(this, btnRow, spec.offSoundTrigger, spec.offCustomSoundPath);
                     }
+                    if (spec.linkUrl != null && !spec.linkUrl.trim().isEmpty() && isBtnOn[0]) {
+                        openLinkUrl(spec.linkUrl);
+                    }
                     String payload = isBtnOn[0] ? spec.onPayloadHex : spec.offPayloadHex;
-                    LocalConfigStateWriter.getInstance().writeCustomComponentOffsetAsync(
+                    LocalConfigStateWriter.getInstance().applyWidgetPatchAsync(
                             getFilesDir(),
+                            "widget_" + spec.id,
+                            "BUTTON",
                             spec.targetFilePath,
                             spec.byteOffsetHex,
+                            spec.offPayloadHex,
+                            spec.onPayloadHex,
                             payload,
+                            isBtnOn[0],
                             spec.label
                     );
                 };
@@ -685,6 +877,20 @@ public class FloatingDashboardService extends Service {
                 btnRow.addView(pillBadge, pillLp);
                 return btnRow;
             }
+        }
+    }
+
+    private void openLinkUrl(String rawUrl) {
+        if (rawUrl == null || rawUrl.trim().isEmpty()) return;
+        String url = rawUrl.trim();
+        if (!url.startsWith("http://") && !url.startsWith("https://")) {
+            url = "https://" + url;
+        }
+        try {
+            Intent browserIntent = new Intent(Intent.ACTION_VIEW, android.net.Uri.parse(url));
+            browserIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+            startActivity(browserIntent);
+        } catch (Exception ignored) {
         }
     }
 
@@ -703,6 +909,224 @@ public class FloatingDashboardService extends Service {
 
     private int dpToPx(int dp) {
         return Math.round(dp * getResources().getDisplayMetrics().density);
+    }
+
+    /**
+     * Deterministic, zero-jitter vertical scroll container that extends FrameLayout (NOT ScrollView)
+     * so OEM ROMs (RealmeUI / ColorOS / MIUI) and Android 12+ StretchEdgeEffect never apply
+     * rubber-band bounce or shaking when touching/scrolling widgets inside the floating window.
+     */
+    private static final class OverflowOnlyScrollLayout extends FrameLayout {
+        private final OverScroller scroller;
+        private final int touchSlop;
+        private final int minFlingVelocity;
+        private final int maxFlingVelocity;
+        private VelocityTracker velocityTracker;
+        private float downRawY;
+        private float lastRawY;
+        private boolean isBeingDragged = false;
+
+        OverflowOnlyScrollLayout(Context context) {
+            super(context);
+            this.scroller = new OverScroller(context);
+            ViewConfiguration vc = ViewConfiguration.get(context);
+            this.touchSlop = vc.getScaledTouchSlop();
+            this.minFlingVelocity = vc.getScaledMinimumFlingVelocity();
+            this.maxFlingVelocity = vc.getScaledMaximumFlingVelocity();
+            setOverScrollMode(View.OVER_SCROLL_NEVER);
+            setClipChildren(true);
+            setClipToPadding(true);
+        }
+
+        private int getMaxScrollRange() {
+            if (getChildCount() == 0) return 0;
+            View child = getChildAt(0);
+            return Math.max(0, child.getHeight() - getHeight());
+        }
+
+        @Override
+        protected void onMeasure(int widthMeasureSpec, int heightMeasureSpec) {
+            super.onMeasure(widthMeasureSpec, heightMeasureSpec);
+            if (getChildCount() > 0) {
+                View child = getChildAt(0);
+                int widthSpec = MeasureSpec.makeMeasureSpec(getMeasuredWidth(), MeasureSpec.EXACTLY);
+                int heightSpec = MeasureSpec.makeMeasureSpec(0, MeasureSpec.UNSPECIFIED);
+                child.measure(widthSpec, heightSpec);
+            }
+        }
+
+        @Override
+        protected void onLayout(boolean changed, int left, int top, int right, int bottom) {
+            if (getChildCount() > 0) {
+                View child = getChildAt(0);
+                child.layout(0, 0, child.getMeasuredWidth(), child.getMeasuredHeight());
+            }
+            int maxRange = getMaxScrollRange();
+            if (maxRange <= 0) {
+                if (getScrollY() != 0) {
+                    scrollTo(0, 0);
+                }
+            } else if (getScrollY() > maxRange) {
+                scrollTo(0, maxRange);
+            }
+        }
+
+        @Override
+        public void requestChildFocus(View child, View focused) {
+            // Prevent EditText focus from auto-jumping/shaking the floating container
+            super.requestChildFocus(child, focused);
+        }
+
+        @Override
+        public boolean onInterceptTouchEvent(MotionEvent ev) {
+            int maxRange = getMaxScrollRange();
+            if (maxRange <= 0) {
+                isBeingDragged = false;
+                if (getScrollY() != 0) {
+                    scrollTo(0, 0);
+                }
+                return false;
+            }
+
+            int action = ev.getActionMasked();
+            if (action == MotionEvent.ACTION_CANCEL || action == MotionEvent.ACTION_UP) {
+                isBeingDragged = false;
+                recycleVelocityTracker();
+                return false;
+            }
+
+            if (action != MotionEvent.ACTION_DOWN && isBeingDragged) {
+                return true;
+            }
+
+            switch (action) {
+                case MotionEvent.ACTION_DOWN: {
+                    downRawY = ev.getRawY();
+                    lastRawY = downRawY;
+                    if (!scroller.isFinished()) {
+                        scroller.abortAnimation();
+                    }
+                    isBeingDragged = false;
+                    initOrResetVelocityTracker();
+                    velocityTracker.addMovement(ev);
+                    break;
+                }
+                case MotionEvent.ACTION_MOVE: {
+                    float rawY = ev.getRawY();
+                    float yDiff = Math.abs(rawY - downRawY);
+                    if (yDiff > touchSlop) {
+                        isBeingDragged = true;
+                        lastRawY = rawY;
+                        initVelocityTrackerIfNotExists();
+                        velocityTracker.addMovement(ev);
+                        if (getParent() != null) {
+                            getParent().requestDisallowInterceptTouchEvent(true);
+                        }
+                    }
+                    break;
+                }
+            }
+            return isBeingDragged;
+        }
+
+        @Override
+        public boolean onTouchEvent(MotionEvent ev) {
+            int maxRange = getMaxScrollRange();
+            if (maxRange <= 0) {
+                isBeingDragged = false;
+                if (getScrollY() != 0) {
+                    scrollTo(0, 0);
+                }
+                return false;
+            }
+
+            initVelocityTrackerIfNotExists();
+            velocityTracker.addMovement(ev);
+
+            switch (ev.getActionMasked()) {
+                case MotionEvent.ACTION_DOWN: {
+                    if (!scroller.isFinished()) {
+                        scroller.abortAnimation();
+                    }
+                    downRawY = ev.getRawY();
+                    lastRawY = downRawY;
+                    return true;
+                }
+                case MotionEvent.ACTION_MOVE: {
+                    float rawY = ev.getRawY();
+                    float deltaY = lastRawY - rawY;
+                    if (!isBeingDragged && Math.abs(rawY - downRawY) > touchSlop) {
+                        isBeingDragged = true;
+                        if (deltaY > 0) {
+                            deltaY -= touchSlop;
+                        } else {
+                            deltaY += touchSlop;
+                        }
+                    }
+                    if (isBeingDragged && Math.abs(deltaY) >= 1.0f) {
+                        int stepPx = Math.round(deltaY);
+                        lastRawY = rawY;
+                        int targetScrollY = Math.max(0, Math.min(maxRange, getScrollY() + stepPx));
+                        if (targetScrollY != getScrollY()) {
+                            scrollTo(0, targetScrollY);
+                        }
+                    }
+                    return true;
+                }
+                case MotionEvent.ACTION_UP: {
+                    if (isBeingDragged) {
+                        velocityTracker.computeCurrentVelocity(1000, maxFlingVelocity);
+                        int yVelocity = (int) velocityTracker.getYVelocity();
+                        if (Math.abs(yVelocity) > minFlingVelocity) {
+                            scroller.fling(0, getScrollY(), 0, -yVelocity, 0, 0, 0, maxRange);
+                            postInvalidateOnAnimation();
+                        }
+                        isBeingDragged = false;
+                    }
+                    recycleVelocityTracker();
+                    return true;
+                }
+                case MotionEvent.ACTION_CANCEL: {
+                    isBeingDragged = false;
+                    recycleVelocityTracker();
+                    return true;
+                }
+            }
+            return true;
+        }
+
+        @Override
+        public void computeScroll() {
+            if (scroller.computeScrollOffset()) {
+                int maxRange = getMaxScrollRange();
+                int targetY = Math.max(0, Math.min(maxRange, scroller.getCurrY()));
+                if (targetY != getScrollY()) {
+                    scrollTo(0, targetY);
+                }
+                postInvalidateOnAnimation();
+            }
+        }
+
+        private void initOrResetVelocityTracker() {
+            if (velocityTracker == null) {
+                velocityTracker = VelocityTracker.obtain();
+            } else {
+                velocityTracker.clear();
+            }
+        }
+
+        private void initVelocityTrackerIfNotExists() {
+            if (velocityTracker == null) {
+                velocityTracker = VelocityTracker.obtain();
+            }
+        }
+
+        private void recycleVelocityTracker() {
+            if (velocityTracker != null) {
+                velocityTracker.recycle();
+                velocityTracker = null;
+            }
+        }
     }
 
     private int parseSafeColor(String hex, int fallback) {

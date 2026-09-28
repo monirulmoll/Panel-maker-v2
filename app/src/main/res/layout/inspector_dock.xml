@@ -1,0 +1,284 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/inspector_dock_root"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:background="#EEEEEE"
+    android:elevation="12dp"
+    android:orientation="vertical">
+
+    <!-- 1. Compact Blue Header Bar -->
+    <LinearLayout
+        android:id="@+id/inspector_header_bar"
+        android:layout_width="match_parent"
+        android:layout_height="36dp"
+        android:background="#0288D1"
+        android:gravity="center_vertical"
+        android:orientation="horizontal"
+        android:paddingStart="8dp"
+        android:paddingEnd="8dp">
+
+        <TextView
+            android:id="@+id/tv_inspector_widget_id"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:singleLine="true"
+            android:text="switch1 (Switch #1)"
+            android:textColor="#FFFFFF"
+            android:textSize="12sp"
+            android:textStyle="bold" />
+
+        <Button
+            android:id="@+id/btn_inspector_state_toggle"
+            android:layout_width="wrap_content"
+            android:layout_height="28dp"
+            android:backgroundTint="#EF4444"
+            android:paddingStart="8dp"
+            android:paddingEnd="8dp"
+            android:text="OFF"
+            android:textAllCaps="false"
+            android:textColor="#FFFFFF"
+            android:textSize="10sp"
+            android:textStyle="bold" />
+
+        <ImageButton
+            android:id="@+id/btn_inspector_duplicate"
+            android:layout_width="32dp"
+            android:layout_height="32dp"
+            android:background="?android:attr/selectableItemBackgroundBorderless"
+            android:contentDescription="Duplicate"
+            android:src="@android:drawable/ic_menu_set_as" />
+
+        <ImageButton
+            android:id="@+id/btn_inspector_delete"
+            android:layout_width="32dp"
+            android:layout_height="32dp"
+            android:background="?android:attr/selectableItemBackgroundBorderless"
+            android:contentDescription="Delete"
+            android:src="@android:drawable/ic_menu_delete" />
+
+        <ImageButton
+            android:id="@+id/btn_inspector_save_close"
+            android:layout_width="32dp"
+            android:layout_height="32dp"
+            android:background="?android:attr/selectableItemBackgroundBorderless"
+            android:contentDescription="Save and Close"
+            android:src="@android:drawable/ic_menu_save" />
+    </LinearLayout>
+
+    <!-- 2. Horizontal Quick Action Property Chips ("auto fix", "inject", "convert", "width", "height", "bg color", "on sound", "off sound") -->
+    <HorizontalScrollView
+        android:id="@+id/inspector_chips_scroll"
+        android:layout_width="match_parent"
+        android:layout_height="44dp"
+        android:background="#EEEEEE"
+        android:overScrollMode="never"
+        android:scrollbars="none">
+
+        <LinearLayout
+            android:id="@+id/inspector_chips_row"
+            android:layout_width="wrap_content"
+            android:layout_height="match_parent"
+            android:gravity="center_vertical"
+            android:orientation="horizontal"
+            android:paddingStart="6dp"
+            android:paddingEnd="6dp">
+
+            <Button
+                android:id="@+id/chip_auto_fix"
+                android:layout_width="wrap_content"
+                android:layout_height="36dp"
+                android:layout_marginEnd="6dp"
+                android:text="auto fix"
+                android:textAllCaps="false"
+                android:textSize="10sp" />
+
+            <Button
+                android:id="@+id/chip_inject"
+                android:layout_width="wrap_content"
+                android:layout_height="36dp"
+                android:layout_marginEnd="6dp"
+                android:text="inject"
+                android:textAllCaps="false"
+                android:textSize="10sp" />
+
+            <Button
+                android:id="@+id/chip_convert"
+                android:layout_width="wrap_content"
+                android:layout_height="36dp"
+                android:layout_marginEnd="6dp"
+                android:text="convert"
+                android:textAllCaps="false"
+                android:textSize="10sp" />
+
+            <Button
+                android:id="@+id/chip_width"
+                android:layout_width="wrap_content"
+                android:layout_height="36dp"
+                android:layout_marginEnd="6dp"
+                android:text="width"
+                android:textAllCaps="false"
+                android:textSize="10sp" />
+
+            <Button
+                android:id="@+id/chip_height"
+                android:layout_width="wrap_content"
+                android:layout_height="36dp"
+                android:layout_marginEnd="6dp"
+                android:text="height"
+                android:textAllCaps="false"
+                android:textSize="10sp" />
+
+            <Button
+                android:id="@+id/chip_bg_color"
+                android:layout_width="wrap_content"
+                android:layout_height="36dp"
+                android:layout_marginEnd="6dp"
+                android:text="bg color"
+                android:textAllCaps="false"
+                android:textSize="10sp" />
+
+            <Button
+                android:id="@+id/chip_on_sound"
+                android:layout_width="wrap_content"
+                android:layout_height="36dp"
+                android:layout_marginEnd="6dp"
+                android:text="on sound"
+                android:textAllCaps="false"
+                android:textSize="10sp" />
+
+            <Button
+                android:id="@+id/chip_off_sound"
+                android:layout_width="wrap_content"
+                android:layout_height="36dp"
+                android:text="off sound"
+                android:textAllCaps="false"
+                android:textSize="10sp" />
+        </LinearLayout>
+    </HorizontalScrollView>
+
+    <!-- 3. Property Editor Fields Container -->
+    <ScrollView
+        android:id="@+id/inspector_fields_scroll"
+        android:layout_width="match_parent"
+        android:layout_height="220dp"
+        android:background="#FFFFFF"
+        android:overScrollMode="never">
+
+        <LinearLayout
+            android:id="@+id/inspector_fields_container"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical"
+            android:padding="10dp">
+
+            <EditText
+                android:id="@+id/et_component_label"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:hint="Component Text / Label"
+                android:inputType="text"
+                android:singleLine="true"
+                android:textSize="13sp" />
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="horizontal">
+
+                <EditText
+                    android:id="@+id/et_component_width"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:hint="Width (dp)"
+                    android:inputType="number"
+                    android:singleLine="true"
+                    android:textSize="13sp" />
+
+                <EditText
+                    android:id="@+id/et_component_height"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:hint="Height (dp)"
+                    android:inputType="number"
+                    android:singleLine="true"
+                    android:textSize="13sp" />
+            </LinearLayout>
+
+            <EditText
+                android:id="@+id/et_target_file_path"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:hint="Target Local File Path (Inject Target)"
+                android:inputType="textUri"
+                android:singleLine="true"
+                android:textSize="12sp" />
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="horizontal">
+
+                <EditText
+                    android:id="@+id/et_byte_offset_hex"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:hint="Byte Offset (0x04)"
+                    android:inputType="text"
+                    android:singleLine="true"
+                    android:textSize="12sp" />
+
+                <EditText
+                    android:id="@+id/et_on_payload_hex"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:hint="ON Value (0x01)"
+                    android:inputType="text"
+                    android:singleLine="true"
+                    android:textSize="12sp" />
+
+                <EditText
+                    android:id="@+id/et_off_payload_hex"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:hint="OFF Value (0x00)"
+                    android:inputType="text"
+                    android:singleLine="true"
+                    android:textSize="12sp" />
+            </LinearLayout>
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="horizontal">
+
+                <EditText
+                    android:id="@+id/et_bg_color_hex"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:hint="Background Hex (#2563EB)"
+                    android:inputType="text"
+                    android:singleLine="true"
+                    android:textSize="12sp" />
+
+                <EditText
+                    android:id="@+id/et_text_color_hex"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:hint="Text Hex (#FFFFFF)"
+                    android:inputType="text"
+                    android:singleLine="true"
+                    android:textSize="12sp" />
+            </LinearLayout>
+        </LinearLayout>
+    </ScrollView>
+
+</LinearLayout>

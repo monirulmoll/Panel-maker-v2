@@ -4,14 +4,22 @@ import android.os.Handler;
 import android.os.Looper;
 
 import java.io.File;
+import java.io.FileInputStream;
+import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.RandomAccessFile;
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 import java.util.zip.CRC32;
 
 /**
@@ -45,6 +53,7 @@ public class LocalConfigStateWriter {
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
     private final List<OnStateWriteListener> listeners = new CopyOnWriteArrayList<>();
     private final ConfigParameterSpec.StateSnapshot currentState = new ConfigParameterSpec.StateSnapshot();
+    private final Map<String, String> lastWrittenByWidget = new ConcurrentHashMap<>();
     private volatile File activeFile;
 
     public static LocalConfigStateWriter getInstance() {
@@ -239,11 +248,52 @@ public class LocalConfigStateWriter {
             final String payloadValue,
             final String componentLabel
     ) {
+        applyWidgetPatchAsync(
+                fallbackDir,
+                componentLabel != null ? componentLabel : "widget",
+                "BUTTON",
+                targetFilePath,
+                byteOffsetHex,
+                "",
+                payloadValue,
+                payloadValue,
+                true,
+                componentLabel
+        );
+    }
+
+    /**
+     * Modifies the target file at [targetFilePath] ("Path") in real-time by replacing the
+     * [originalValue] ("Original") area with [changeValue] ("Change") when switched ON, slid,
+     * or edited, and reverting [changeValue] back to [originalValue] when switched OFF.
+     * Supports live running Python (.py) scripts, text/config files, and binary offset files.
+     */
+    public void applyWidgetPatchAsync(
+            final File fallbackDir,
+            final String widgetKey,
+            final String widgetType,
+            final String targetFilePath,
+            final String byteOffsetHex,
+            final String originalValue,
+            final String changeValue,
+            final String liveValue,
+            final boolean isActive,
+            final String componentLabel
+    ) {
         fileIoExecutor.execute(() -> {
             long startNs = System.nanoTime();
             int offset = parseOffsetString(byteOffsetHex);
-            byte[] payloadBytes = parsePayloadBytes(payloadValue);
             File target = resolveTargetFile(fallbackDir, targetFilePath);
+            String safeKey = (widgetKey != null && !widgetKey.trim().isEmpty())
+                    ? widgetKey.trim()
+                    : (componentLabel != null ? componentLabel : "widget");
+            String orig = originalValue != null ? originalValue : "";
+            String chg = changeValue != null ? changeValue : "";
+            String live = liveValue != null ? liveValue : "";
+            String type = widgetType != null ? widgetType.toUpperCase(Locale.US) : "BUTTON";
+
+            String replacementText = computeReplacementText(type, orig, chg, live, isActive);
+            String previousVal = lastWrittenByWidget.getOrDefault(safeKey, isActive ? orig : chg);
 
             ConfigParameterSpec.StateSnapshot snapshot;
             synchronized (LocalConfigStateWriter.this) {
@@ -252,25 +302,241 @@ public class LocalConfigStateWriter {
                     if (parent != null && !parent.exists()) {
                         parent.mkdirs();
                     }
-                    try (RandomAccessFile raf = new RandomAccessFile(target, "rw")) {
-                        if (raf.length() < offset + payloadBytes.length) {
-                            raf.setLength(Math.max(64, offset + payloadBytes.length));
+
+                    boolean useTextScriptPatch = shouldUseTextOrScriptPatch(target, orig, chg, type);
+                    if (useTextScriptPatch) {
+                        patchTextOrPythonFileLocked(target, safeKey, orig, chg, replacementText, isActive);
+                    } else {
+                        byte[] payloadBytes = parsePayloadBytes(replacementText);
+                        try (RandomAccessFile raf = new RandomAccessFile(target, "rw")) {
+                            if (raf.length() < offset + payloadBytes.length) {
+                                raf.setLength(Math.max(64, offset + payloadBytes.length));
+                            }
+                            raf.seek(offset);
+                            raf.write(payloadBytes);
                         }
-                        raf.seek(offset);
-                        raf.write(payloadBytes);
+                        lastWrittenByWidget.put(safeKey, replacementText);
                     }
+
                     activeFile = target;
                     currentState.targetFilePath = target.getAbsolutePath();
+                    currentState.rawTextContent = replacementText;
                     snapshot = currentState.copy();
                 } catch (IOException e) {
-                    notifyWriteError(componentLabel, "Write failed @" + byteOffsetHex + ": " + e.getMessage());
+                    notifyWriteError(componentLabel, "Write failed (" + target.getName() + "): " + e.getMessage());
                     return;
                 }
             }
 
             long elapsedUs = (System.nanoTime() - startNs) / 1_000L;
-            notifyWriteSuccess(componentLabel, offset, "PREV", payloadValue, elapsedUs, snapshot);
+            notifyWriteSuccess(componentLabel, offset, previousVal, replacementText, elapsedUs, snapshot);
         });
+    }
+
+    private String computeReplacementText(
+            String widgetType,
+            String originalValue,
+            String changeValue,
+            String liveValue,
+            boolean isActive
+    ) {
+        String orig = originalValue != null ? originalValue : "";
+        String chg = changeValue != null ? changeValue : "";
+        String live = liveValue != null ? liveValue : "";
+
+        if ("SLIDER".equals(widgetType)) {
+            String valStr = live.trim().isEmpty() ? "0" : live.trim();
+            if ("0".equals(valStr) && !orig.trim().isEmpty() && !"0x00".equalsIgnoreCase(orig.trim())) {
+                if (orig.matches(".*[-+]?\\d+(\\.\\d+)?.*") && !orig.trim().matches("[-+]?\\d+(\\.\\d+)?")) {
+                    return replaceLastNumber(orig, valStr);
+                }
+            }
+            if (chg.contains("{value}") || chg.contains("{val}") || chg.contains("$value") || chg.contains("%d") || chg.contains("%s")) {
+                return chg
+                        .replace("{value}", valStr)
+                        .replace("{val}", valStr)
+                        .replace("$value", valStr)
+                        .replace("%d", valStr)
+                        .replace("%s", valStr);
+            }
+            String chgTrim = chg.trim();
+            if (chgTrim.endsWith("=") || chgTrim.endsWith(":")) {
+                return chg + (chg.endsWith(" ") ? "" : " ") + valStr;
+            }
+            if (!chgTrim.isEmpty() && !"0x01".equalsIgnoreCase(chgTrim)
+                    && chgTrim.matches(".*[-+]?\\d+(\\.\\d+)?.*")
+                    && !chgTrim.matches("[-+]?\\d+(\\.\\d+)?")) {
+                return replaceLastNumber(chg, valStr);
+            }
+            String origTrim = orig.trim();
+            if (!origTrim.isEmpty() && !"0x00".equalsIgnoreCase(origTrim)
+                    && origTrim.matches(".*[-+]?\\d+(\\.\\d+)?.*")
+                    && !origTrim.matches("[-+]?\\d+(\\.\\d+)?")) {
+                return replaceLastNumber(orig, valStr);
+            }
+            return valStr;
+        }
+
+        if ("INPUT".equals(widgetType)) {
+            if (live.trim().isEmpty() && !orig.trim().isEmpty() && !"0x00".equalsIgnoreCase(orig.trim())) {
+                return orig;
+            }
+            if (chg.contains("{value}") || chg.contains("{val}") || chg.contains("$value") || chg.contains("%s")) {
+                return chg
+                        .replace("{value}", live)
+                        .replace("{val}", live)
+                        .replace("$value", live)
+                        .replace("%s", live);
+            }
+            String chgTrim = chg.trim();
+            if (chgTrim.endsWith("=") || chgTrim.endsWith(":")) {
+                return chg + (chg.endsWith(" ") ? "" : " ") + live;
+            }
+            if (!live.isEmpty()) {
+                return live;
+            }
+            return isActive ? chg : orig;
+        }
+
+        // BUTTON, TOGGLE, IMAGE, TEXT:
+        if (isActive) {
+            return !chg.isEmpty() ? chg : (!live.isEmpty() ? live : "0x01");
+        } else {
+            return !orig.isEmpty() ? orig : (!live.isEmpty() ? live : "0x00");
+        }
+    }
+
+    private String replaceLastNumber(String input, String newNumber) {
+        Matcher m = Pattern.compile("[-+]?\\d+(?:\\.\\d+)?").matcher(input);
+        int start = -1;
+        int end = -1;
+        while (m.find()) {
+            start = m.start();
+            end = m.end();
+        }
+        if (start >= 0 && end >= start) {
+            return input.substring(0, start) + newNumber + input.substring(end);
+        }
+        return input + " " + newNumber;
+    }
+
+    private boolean shouldUseTextOrScriptPatch(File target, String orig, String chg, String type) {
+        String name = target.getName().toLowerCase(Locale.US);
+        if (name.endsWith(".py") || name.endsWith(".txt") || name.endsWith(".sh")
+                || name.endsWith(".lua") || name.endsWith(".js") || name.endsWith(".json")
+                || name.endsWith(".cfg") || name.endsWith(".ini") || name.endsWith(".conf")
+                || name.endsWith(".yaml") || name.endsWith(".yml") || name.endsWith(".xml")
+                || name.endsWith(".prop") || name.endsWith(".csv")) {
+            return true;
+        }
+        boolean origIsDefaultHex = orig == null || orig.trim().isEmpty() || isSingleHexOrByte(orig.trim());
+        boolean chgIsDefaultHex = chg == null || chg.trim().isEmpty() || isSingleHexOrByte(chg.trim());
+        return !origIsDefaultHex || !chgIsDefaultHex;
+    }
+
+    private boolean isSingleHexOrByte(String s) {
+        if (s.startsWith("0x") || s.startsWith("0X")) {
+            try {
+                int v = Integer.parseInt(s.substring(2), 16);
+                return v >= 0 && v <= 255;
+            } catch (NumberFormatException e) {
+                return false;
+            }
+        }
+        return false;
+    }
+
+    private void patchTextOrPythonFileLocked(
+            File target,
+            String widgetKey,
+            String originalValue,
+            String changeValue,
+            String replacementText,
+            boolean isActive
+    ) throws IOException {
+        String content = "";
+        if (target.exists() && target.length() > 0) {
+            byte[] raw = new byte[(int) Math.min(target.length(), 2 * 1024 * 1024)];
+            try (FileInputStream fis = new FileInputStream(target)) {
+                int read = fis.read(raw);
+                if (read > 0) {
+                    content = new String(raw, 0, read, StandardCharsets.UTF_8);
+                }
+            }
+        }
+
+        List<String> candidates = new ArrayList<>();
+        String lastWritten = lastWrittenByWidget.get(widgetKey);
+        if (lastWritten != null && !lastWritten.isEmpty()) {
+            candidates.add(lastWritten);
+        }
+        if (isActive) {
+            if (originalValue != null && !originalValue.isEmpty()) candidates.add(originalValue);
+            if (changeValue != null && !changeValue.isEmpty()) candidates.add(changeValue);
+        } else {
+            if (changeValue != null && !changeValue.isEmpty()) candidates.add(changeValue);
+            if (originalValue != null && !originalValue.isEmpty()) candidates.add(originalValue);
+        }
+
+        String updatedContent = null;
+        for (String candidate : candidates) {
+            if (candidate != null && !candidate.isEmpty() && content.contains(candidate)) {
+                int idx = content.indexOf(candidate);
+                updatedContent = content.substring(0, idx)
+                        + replacementText
+                        + content.substring(idx + candidate.length());
+                break;
+            }
+        }
+
+        // Fallback: if Original or Change looks like a Python/script assignment (e.g. "speed = 10"),
+        // match the variable assignment line in the file even if its value was already changed earlier.
+        if (updatedContent == null && !content.isEmpty()) {
+            String varName = extractAssignmentVarName(originalValue);
+            if (varName == null) {
+                varName = extractAssignmentVarName(changeValue);
+            }
+            if (varName != null) {
+                Pattern linePattern = Pattern.compile("(?m)^([ \\t]*" + Pattern.quote(varName) + "[ \\t]*=[ \\t]*)([^\\r\\n#]+)");
+                Matcher m = linePattern.matcher(content);
+                if (m.find()) {
+                    if (replacementText.contains("=")) {
+                        updatedContent = content.substring(0, m.start())
+                                + replacementText
+                                + content.substring(m.end());
+                    } else {
+                        updatedContent = content.substring(0, m.start(2))
+                                + replacementText
+                                + content.substring(m.end(2));
+                    }
+                }
+            }
+        }
+
+        if (updatedContent == null) {
+            if (content.isEmpty()) {
+                updatedContent = replacementText + "\n";
+            } else if (content.endsWith("\n")) {
+                updatedContent = content + replacementText + "\n";
+            } else {
+                updatedContent = content + "\n" + replacementText + "\n";
+            }
+        }
+
+        try (FileOutputStream fos = new FileOutputStream(target, false)) {
+            fos.write(updatedContent.getBytes(StandardCharsets.UTF_8));
+            fos.flush();
+        }
+        lastWrittenByWidget.put(widgetKey, replacementText);
+    }
+
+    private String extractAssignmentVarName(String expr) {
+        if (expr == null) return null;
+        Matcher m = Pattern.compile("^\\s*([A-Za-z_][A-Za-z0-9_]*)\\s*=").matcher(expr);
+        if (m.find()) {
+            return m.group(1);
+        }
+        return null;
     }
 
     private int parseOffsetString(String rawOffset) {

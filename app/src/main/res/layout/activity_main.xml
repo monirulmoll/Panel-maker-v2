@@ -1,0 +1,214 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/studio_root_container"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:orientation="vertical"
+    android:background="#E2E8F0">
+
+    <!-- Top App Bar: Project Title, Build APK Button, and Float Overlay Button -->
+    <LinearLayout
+        android:id="@+id/top_app_bar"
+        android:layout_width="match_parent"
+        android:layout_height="56dp"
+        android:background="#0288D1"
+        android:gravity="center_vertical"
+        android:orientation="horizontal"
+        android:paddingStart="12dp"
+        android:paddingEnd="12dp">
+
+        <ImageButton
+            android:id="@+id/btn_back_launcher"
+            android:layout_width="40dp"
+            android:layout_height="40dp"
+            android:background="?android:attr/selectableItemBackgroundBorderless"
+            android:contentDescription="@string/app_name"
+            android:src="@android:drawable/ic_menu_revert" />
+
+        <LinearLayout
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_marginStart="8dp"
+            android:layout_weight="1"
+            android:orientation="vertical">
+
+            <TextView
+                android:id="@+id/tv_project_name"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:singleLine="true"
+                android:text="@string/app_name"
+                android:textColor="#FFFFFF"
+                android:textSize="16sp"
+                android:textStyle="bold" />
+
+            <TextView
+                android:id="@+id/tv_project_subtitle"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:singleLine="true"
+                android:text="Floating Mod Panel • 216x290 dp"
+                android:textColor="#E0F2FE"
+                android:textSize="11sp" />
+        </LinearLayout>
+
+        <Button
+            android:id="@+id/btn_build_apk"
+            android:layout_width="wrap_content"
+            android:layout_height="36dp"
+            android:layout_marginEnd="6dp"
+            android:backgroundTint="#00C853"
+            android:text="Build"
+            android:textAllCaps="false"
+            android:textColor="#FFFFFF"
+            android:textSize="12sp"
+            android:textStyle="bold" />
+
+        <Button
+            android:id="@+id/btn_float_overlay"
+            android:layout_width="wrap_content"
+            android:layout_height="36dp"
+            android:backgroundTint="#1E293B"
+            android:text="Float"
+            android:textAllCaps="false"
+            android:textColor="#FFFFFF"
+            android:textSize="12sp"
+            android:textStyle="bold" />
+    </LinearLayout>
+
+    <!-- Added Widgets Tracker Strip -->
+    <HorizontalScrollView
+        android:id="@+id/widget_tracker_scroll"
+        android:layout_width="match_parent"
+        android:layout_height="40dp"
+        android:background="#F8FAFC"
+        android:overScrollMode="never"
+        android:scrollbars="none">
+
+        <LinearLayout
+            android:id="@+id/widget_tracker_row"
+            android:layout_width="wrap_content"
+            android:layout_height="match_parent"
+            android:gravity="center_vertical"
+            android:orientation="horizontal"
+            android:paddingStart="10dp"
+            android:paddingEnd="10dp" />
+    </HorizontalScrollView>
+
+    <!-- Split Workspace: Left Palette Sidebar + Right Android Phone Bezel Frame -->
+    <LinearLayout
+        android:id="@+id/split_workspace_container"
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:layout_weight="1"
+        android:orientation="horizontal">
+
+        <!-- Left Vertical Palette Sidebar -->
+        <LinearLayout
+            android:id="@+id/left_palette_sidebar"
+            android:layout_width="104dp"
+            android:layout_height="match_parent"
+            android:background="#F8FAFC"
+            android:orientation="vertical"
+            android:padding="4dp">
+
+            <ScrollView
+                android:id="@+id/palette_scroll_view"
+                android:layout_width="match_parent"
+                android:layout_height="0dp"
+                android:layout_weight="1"
+                android:overScrollMode="never">
+
+                <LinearLayout
+                    android:id="@+id/palette_items_container"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:orientation="vertical">
+
+                    <Button
+                        android:id="@+id/palette_btn_switch"
+                        android:layout_width="match_parent"
+                        android:layout_height="40dp"
+                        android:text="Switch"
+                        android:textAllCaps="false"
+                        android:textSize="10sp" />
+
+                    <Button
+                        android:id="@+id/palette_btn_button"
+                        android:layout_width="match_parent"
+                        android:layout_height="40dp"
+                        android:text="Button"
+                        android:textAllCaps="false"
+                        android:textSize="10sp" />
+
+                    <Button
+                        android:id="@+id/palette_btn_slider"
+                        android:layout_width="match_parent"
+                        android:layout_height="40dp"
+                        android:text="Slide Bar 0-100"
+                        android:textAllCaps="false"
+                        android:textSize="10sp" />
+
+                    <Button
+                        android:id="@+id/palette_btn_text"
+                        android:layout_width="match_parent"
+                        android:layout_height="40dp"
+                        android:text="TextView"
+                        android:textAllCaps="false"
+                        android:textSize="10sp" />
+
+                    <Button
+                        android:id="@+id/palette_btn_input"
+                        android:layout_width="match_parent"
+                        android:layout_height="40dp"
+                        android:text="EditText"
+                        android:textAllCaps="false"
+                        android:textSize="10sp" />
+
+                    <Button
+                        android:id="@+id/palette_btn_image"
+                        android:layout_width="match_parent"
+                        android:layout_height="40dp"
+                        android:text="ImageView"
+                        android:textAllCaps="false"
+                        android:textSize="10sp" />
+                </LinearLayout>
+            </ScrollView>
+
+            <Button
+                android:id="@+id/btn_auto_fix_size_toggle"
+                android:layout_width="match_parent"
+                android:layout_height="34dp"
+                android:backgroundTint="#1E293B"
+                android:text="Auto Size: OFF"
+                android:textAllCaps="false"
+                android:textColor="#FFFFFF"
+                android:textSize="9sp"
+                android:textStyle="bold" />
+        </LinearLayout>
+
+        <!-- Right Phone Bezel Area Holding Empty / Interactive Canvas Workspace -->
+        <FrameLayout
+            android:id="@+id/phone_bezel_frame"
+            android:layout_width="0dp"
+            android:layout_height="match_parent"
+            android:layout_margin="4dp"
+            android:layout_weight="1"
+            android:background="#FFFFFF"
+            android:padding="6dp">
+
+            <FrameLayout
+                android:id="@+id/empty_canvas_workspace_host"
+                android:layout_width="match_parent"
+                android:layout_height="match_parent" />
+        </FrameLayout>
+    </LinearLayout>
+
+    <!-- Bottom Property Inspector Dock Host -->
+    <FrameLayout
+        android:id="@+id/bottom_inspector_dock_host"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:visibility="gone" />
+
+</LinearLayout>

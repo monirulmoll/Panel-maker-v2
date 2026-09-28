@@ -2,14 +2,17 @@ package com.example.ui
 
 import android.app.Application
 import android.content.ContentValues
+import android.content.Context
 import android.content.Intent
 import android.net.Uri
 import android.os.Build
 import android.os.Environment
 import android.provider.MediaStore
 import android.provider.Settings
+import androidx.core.content.FileProvider
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import com.example.blueprint.ApkCompilationEngine
 import com.example.data.AppDatabase
 import com.example.data.CanvasComponentEntity
 import com.example.data.ComponentWidgetType
@@ -31,18 +34,18 @@ import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
-import java.io.ByteArrayOutputStream
+import kotlinx.coroutines.withContext
 import java.io.File
 import java.io.FileInputStream
 import java.io.FileOutputStream
 import java.util.Locale
-import java.util.zip.ZipEntry
-import java.util.zip.ZipOutputStream
 
 enum class StudioDestination {
     PROJECT_LAUNCHER,
-    CANVAS_WORKSPACE
+    CANVAS_WORKSPACE,
+    COMPILED_STANDALONE_APP
 }
 
 data class ComponentCountSummary(
@@ -57,6 +60,7 @@ data class ComponentCountSummary(
 
 data class StudioUiState(
     val destination: StudioDestination = StudioDestination.PROJECT_LAUNCHER,
+    val isBundledStandaloneApk: Boolean = false,
     val activeProject: StudioProjectEntity? = null,
     val selectedComponentId: Long? = null,
     val isLivePreviewMode: Boolean = false,
@@ -64,8 +68,16 @@ data class StudioUiState(
     val hasOverlayPermission: Boolean = false,
     val showExistingProjectsPicker: Boolean = false,
     val showCreateProjectDialog: Boolean = false,
+    val editingProject: StudioProjectEntity? = null,
+    val showEditFloatingPanelDialog: Boolean = false,
+    val showEditCodeDialog: Boolean = false,
+    val customEditedKotlinFiles: Map<String, String> = emptyMap(),
     val isBuildingApk: Boolean = false,
+    val buildProgressStepText: String = "",
     val rawJavaBuildPreview: String = "",
+    val compiledApkFilePath: String? = null,
+    val compiledAppPackageName: String = "",
+    val compiledAppName: String = "",
     val downloadedFileSummary: String? = null,
     val downloadedFileName: String = "floating_window.apk",
     val statusToast: String = "Welcome to Studio Error — Create or select a project to begin."
@@ -145,8 +157,66 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    private val _bundledStandaloneComponents = MutableStateFlow<List<CanvasComponentEntity>>(emptyList())
+    val bundledStandaloneComponents: StateFlow<List<CanvasComponentEntity>> = _bundledStandaloneComponents.asStateFlow()
+
     init {
         stateWriter.addListener(writeListener)
+        if (DynamicOverlayRegistry.isBundledStandaloneApk(appContext)) {
+            DynamicOverlayRegistry.loadFromBundledAssetsIfEmpty(appContext)
+            val projName = DynamicOverlayRegistry.getActiveProjectName()
+            val pkgName = DynamicOverlayRegistry.getActivePackageName()
+            val standaloneProject = StudioProjectEntity(
+                id = 1L,
+                name = projName,
+                packageName = pkgName,
+                overlayTitle = DynamicOverlayRegistry.getActiveOverlayTitle(),
+                appLogoPath = DynamicOverlayRegistry.getActiveAppLogoPath(),
+                floatingLogoPath = DynamicOverlayRegistry.getActiveFloatingLogoPath(),
+                canvasWidthDp = DynamicOverlayRegistry.getActiveCanvasWidthDp(),
+                canvasHeightDp = DynamicOverlayRegistry.getActiveCanvasHeightDp(),
+                canvasBgColorHex = DynamicOverlayRegistry.getActiveCanvasBgHex(),
+                autoFixSize = DynamicOverlayRegistry.isActiveAutoFixSize(),
+                defaultTargetFilePath = getDefaultTargetFilePath(projName)
+            )
+            val standaloneItems = DynamicOverlayRegistry.getActiveItems().map { spec ->
+                CanvasComponentEntity(
+                    id = spec.id,
+                    projectId = 1L,
+                    type = spec.type ?: ComponentWidgetType.BUTTON.name,
+                    label = spec.label ?: "Widget",
+                    posXDp = spec.posXDp,
+                    posYDp = spec.posYDp,
+                    widthDp = spec.widthDp,
+                    heightDp = spec.heightDp,
+                    bgColorHex = spec.bgColorHex ?: "#FFFFFF",
+                    textColorHex = spec.textColorHex ?: "#0F172A",
+                    customImagePath = spec.customImagePath ?: "",
+                    soundTrigger = spec.soundTrigger ?: "NONE",
+                    customSoundPath = spec.customSoundPath ?: "",
+                    offSoundTrigger = spec.offSoundTrigger ?: "NONE",
+                    offCustomSoundPath = spec.offCustomSoundPath ?: "",
+                    targetFilePath = spec.targetFilePath ?: "",
+                    byteOffsetHex = spec.byteOffsetHex ?: "0x04",
+                    onPayloadHex = spec.onPayloadHex ?: "0x01",
+                    offPayloadHex = spec.offPayloadHex ?: "0x00",
+                    sliderMax = spec.sliderMax,
+                    currentValue = spec.currentValue ?: "0",
+                    linkUrl = spec.linkUrl ?: ""
+                )
+            }
+            _bundledStandaloneComponents.value = standaloneItems
+            _uiState.update {
+                it.copy(
+                    destination = StudioDestination.COMPILED_STANDALONE_APP,
+                    isBundledStandaloneApk = true,
+                    activeProject = standaloneProject,
+                    compiledAppPackageName = pkgName,
+                    compiledAppName = projName,
+                    statusToast = "Running compiled app '$projName' (${standaloneItems.size} widgets)"
+                )
+            }
+        }
     }
 
     override fun onCleared() {
@@ -170,28 +240,167 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         _uiState.update { it.copy(showExistingProjectsPicker = show) }
     }
 
+    fun openEditProjectDialog(project: StudioProjectEntity?) {
+        _uiState.update { it.copy(editingProject = project) }
+    }
+
+    fun openEditFloatingPanelDialog(show: Boolean) {
+        _uiState.update { it.copy(showEditFloatingPanelDialog = show) }
+    }
+
     /**
-     * Requirement 1 & 2:
-     * Creates a new project and opens the 100% BLANK Canvas Workspace (zero pre-made components).
+     * Updates the active project's Floating Panel Name (overlayTitle) and Floating Goal Logo (floatingLogoPath)
+     * directly from the Studio Workspace editor.
+     */
+    fun updateFloatingPanelNameAndLogo(
+        newOverlayTitle: String,
+        newFloatingLogoPath: String
+    ) {
+        val currentProject = _uiState.value.activeProject ?: return
+        val cleanTitle = newOverlayTitle.trim()
+        val cleanLogo = newFloatingLogoPath.trim()
+        viewModelScope.launch {
+            val updated = currentProject.copy(
+                overlayTitle = cleanTitle,
+                floatingLogoPath = cleanLogo,
+                updatedAt = System.currentTimeMillis()
+            )
+            studioDao.updateProject(updated)
+            _uiState.update { state ->
+                state.copy(
+                    activeProject = updated,
+                    showEditFloatingPanelDialog = false,
+                    statusToast = "Updated Floating Panel Name & Goal Logo."
+                )
+            }
+        }
+    }
+
+    /**
+     * Copies a user-picked App Logo image from the Android Photo Picker into local app storage
+     * and invokes [onResult] with its absolute file path.
+     */
+    fun importProjectLogoUri(uri: Uri, onResult: (String) -> Unit) {
+        viewModelScope.launch {
+            try {
+                val destPath = withContext(Dispatchers.IO) {
+                    val logoDir = File(appContext.filesDir, "project_logos").apply { mkdirs() }
+                    val destFile = File(logoDir, "app_logo_${System.currentTimeMillis()}.png")
+                    appContext.contentResolver.openInputStream(uri)?.use { input ->
+                        FileOutputStream(destFile).use { output ->
+                            input.copyTo(output)
+                        }
+                    }
+                    destFile.absolutePath
+                }
+                onResult(destPath)
+            } catch (e: Exception) {
+                _uiState.update {
+                    it.copy(statusToast = "Could not load selected logo: ${e.message}")
+                }
+            }
+        }
+    }
+
+    /**
+     * Updates a saved project's complete Android Studio / Sketchware configuration
+     * (App Name, Package ID, Project Name, App Logo, Version Code, Version Name, Min/Target SDK, Window Title)
+     * from the Home Screen Pencil Icon dialog.
+     */
+    fun updateProjectNameAndLogo(
+        project: StudioProjectEntity,
+        newName: String,
+        newPackageName: String,
+        newProjectName: String,
+        newOverlayTitle: String,
+        newLogoPath: String,
+        newVersionCode: Int = project.versionCode,
+        newVersionName: String = project.versionName,
+        newMinSdk: Int = project.minSdk,
+        newTargetSdk: Int = project.targetSdk,
+        newFloatingLogoPath: String = project.floatingLogoPath
+    ) {
+        val cleanName = newName.trim()
+        val cleanPkg = newPackageName.trim().lowercase(Locale.US)
+        val cleanProjName = newProjectName.trim()
+        val cleanTitle = newOverlayTitle.trim()
+        val cleanLogo = newLogoPath.trim()
+        val cleanFloatLogo = newFloatingLogoPath.trim()
+        val safeMinSdk = newMinSdk.coerceIn(21, 36)
+        val safeTargetSdk = newTargetSdk.coerceIn(safeMinSdk, 36)
+        val safeVerCode = newVersionCode.coerceAtLeast(1)
+        val safeVerName = newVersionName.trim().ifEmpty { "1.0" }
+
+        viewModelScope.launch {
+            val updated = project.copy(
+                name = cleanName,
+                packageName = cleanPkg,
+                projectName = cleanProjName,
+                overlayTitle = cleanTitle,
+                appLogoPath = cleanLogo,
+                floatingLogoPath = cleanFloatLogo,
+                versionCode = safeVerCode,
+                versionName = safeVerName,
+                minSdk = safeMinSdk,
+                targetSdk = safeTargetSdk,
+                updatedAt = System.currentTimeMillis()
+            )
+            studioDao.updateProject(updated)
+            _uiState.update { state ->
+                state.copy(
+                    editingProject = null,
+                    activeProject = if (state.activeProject?.id == updated.id) updated else state.activeProject,
+                    statusToast = "Saved App Config (Name, Package ID, Logo, Version & SDK)."
+                )
+            }
+        }
+    }
+
+    /**
+     * Creates a new project with NO pre-filled App Name, NO pre-filled Logo, and a 100% empty background,
+     * while supporting full Android Studio & Sketchware configuration (Package ID, Project Name, Version Code/Name, SDK).
      */
     fun createNewBlankProject(
         name: String,
+        packageName: String,
+        projectName: String,
         overlayTitle: String,
         canvasWidthDp: Int,
         canvasHeightDp: Int,
-        targetFilePath: String
+        targetFilePath: String,
+        appLogoPath: String = "",
+        versionCode: Int = 1,
+        versionName: String = "1.0",
+        minSdk: Int = 24,
+        targetSdk: Int = 36
     ) {
-        val cleanName = name.trim().ifEmpty { "Untitled Overlay Project" }
-        val cleanTitle = overlayTitle.trim().ifEmpty { cleanName }
-        val resolvedTarget = targetFilePath.trim().ifEmpty { getDefaultTargetFilePath(cleanName) }
+        val cleanName = name.trim()
+        val cleanPkg = packageName.trim().lowercase(Locale.US)
+        val cleanProjName = projectName.trim()
+        val cleanTitle = overlayTitle.trim()
+        val cleanLogo = appLogoPath.trim()
+        val safeMinSdk = minSdk.coerceIn(21, 36)
+        val safeTargetSdk = targetSdk.coerceIn(safeMinSdk, 36)
+        val safeVerCode = versionCode.coerceAtLeast(1)
+        val safeVerName = versionName.trim().ifEmpty { "1.0" }
+        val resolvedTarget = targetFilePath.trim().ifEmpty {
+            getDefaultTargetFilePath(cleanName.ifEmpty { cleanProjName.ifEmpty { cleanPkg } })
+        }
 
         viewModelScope.launch {
             val newProject = StudioProjectEntity(
                 name = cleanName,
+                packageName = cleanPkg,
+                projectName = cleanProjName,
                 overlayTitle = cleanTitle,
+                appLogoPath = cleanLogo,
+                versionCode = safeVerCode,
+                versionName = safeVerName,
+                minSdk = safeMinSdk,
+                targetSdk = safeTargetSdk,
                 canvasWidthDp = canvasWidthDp.coerceIn(220, 420),
                 canvasHeightDp = canvasHeightDp.coerceIn(220, 560),
-                canvasBgColorHex = "#1E293B",
+                canvasBgColorHex = "#FFFFFF",
                 defaultTargetFilePath = resolvedTarget
             )
             val newId = studioDao.insertProject(newProject)
@@ -205,7 +414,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     isLivePreviewMode = false,
                     showCreateProjectDialog = false,
                     showExistingProjectsPicker = false,
-                    statusToast = "Opened 100% Blank Canvas for '${inserted.name}'. Tap any widget above to add it."
+                    statusToast = "100% Empty Workspace ready."
                 )
             }
         }
@@ -300,6 +509,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             ComponentWidgetType.TEXT -> Triple(150, 34, "#EEF2FF")
             ComponentWidgetType.INPUT -> Triple(186, 42, "#FFFFFF")
             ComponentWidgetType.IMAGE -> Triple(64, 64, "#1E293B")
+            ComponentWidgetType.LINK -> Triple(190, 42, "#0F172A")
         }
 
         val resolvedTextHex = customTextHex ?: when (widgetType) {
@@ -307,6 +517,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             ComponentWidgetType.SLIDER,
             ComponentWidgetType.INPUT -> "#0F172A"
             ComponentWidgetType.TEXT -> "#1E293B"
+            ComponentWidgetType.LINK -> "#38BDF8"
             else -> "#FFFFFF"
         }
 
@@ -333,7 +544,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 onPayloadHex = "0x01",
                 offPayloadHex = "0x00",
                 sliderMax = 100,
-                currentValue = if (widgetType == ComponentWidgetType.SLIDER) "50" else "0"
+                currentValue = if (widgetType == ComponentWidgetType.SLIDER) "50" else "0",
+                linkUrl = if (widgetType == ComponentWidgetType.LINK) "https://google.com" else ""
             )
             val newId = studioDao.insertComponent(entity)
             if (project.autoFixSize) {
@@ -631,6 +843,29 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val isTurningOn: Boolean
 
         when (component.type) {
+            ComponentWidgetType.LINK.name -> {
+                val rawUrl = component.linkUrl.trim().ifEmpty { component.onPayloadHex.trim() }
+                if (rawUrl.isNotEmpty()) {
+                    val formatted = if (rawUrl.startsWith("http://") || rawUrl.startsWith("https://")) rawUrl else "https://$rawUrl"
+                    try {
+                        val intent = Intent(Intent.ACTION_VIEW, Uri.parse(formatted)).apply {
+                            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                        }
+                        appContext.startActivity(intent)
+                    } catch (_: Exception) {
+                    }
+                }
+                SoundTriggerPlayer.playSoundTrigger(
+                    appContext,
+                    null,
+                    component.soundTrigger,
+                    component.customSoundPath
+                )
+                _uiState.update {
+                    it.copy(statusToast = "🌐 Opening Link: ${rawUrl.ifEmpty { "https://google.com" }}")
+                }
+                return
+            }
             ComponentWidgetType.SLIDER.name -> {
                 nextCurrentVal = newValueOverride ?: component.currentValue
                 payloadToWrite = nextCurrentVal
@@ -662,9 +897,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 _uiState.update {
                     it.copy(
                         statusToast = if (nextOn) {
-                            "✅ ${component.label} → ON (${component.onPayloadHex})"
+                            "✅ ${component.label} → CHANGE (${component.onPayloadHex})"
                         } else {
-                            "⛔ ${component.label} → OFF (${component.offPayloadHex})"
+                            "⛔ ${component.label} → ORIGINAL (${component.offPayloadHex})"
                         }
                     )
                 }
@@ -689,11 +924,16 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
         updateComponent(component.copy(currentValue = nextCurrentVal))
 
-        stateWriter.writeCustomComponentOffsetAsync(
+        stateWriter.applyWidgetPatchAsync(
             appContext.filesDir,
+            "widget_${component.id}",
+            component.type,
             component.targetFilePath,
             component.byteOffsetHex,
+            component.offPayloadHex,
+            component.onPayloadHex,
             payloadToWrite,
+            isTurningOn,
             component.label
         )
     }
@@ -746,11 +986,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 offPayloadHex = comp.offPayloadHex
                 sliderMax = comp.sliderMax
                 currentValue = comp.currentValue
+                linkUrl = comp.linkUrl
             }
         }
 
         DynamicOverlayRegistry.updateActiveOverlay(
             project.overlayTitle,
+            project.floatingLogoPath,
             project.canvasWidthDp,
             project.canvasHeightDp,
             project.canvasBgColorHex,
@@ -838,89 +1080,342 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         _uiState.update { it.copy(downloadedFileSummary = null) }
     }
 
+    fun openEditCodeDialog(show: Boolean) {
+        if (show) {
+            val project = _uiState.value.activeProject ?: return
+            val generated = KotlinProjectCodeEngine.generateKotlinFilesForProject(project, activeComponents.value)
+            _uiState.update {
+                it.copy(
+                    showEditCodeDialog = true,
+                    customEditedKotlinFiles = generated,
+                    statusToast = "Opened Edit Code (${generated.size} Kotlin files synced with Visual Screen)."
+                )
+            }
+        } else {
+            _uiState.update { it.copy(showEditCodeDialog = false) }
+        }
+    }
+
     /**
-     * Builds the complete Android Floating Window package (.apk archive containing layout XML,
-     * FloatingModMenuService.java, AndroidManifest.xml, overlay_config.json, and custom assets)
-     * and saves it directly into the Android Downloads directory.
+     * Parses the user's edited Kotlin files from the "Edit Code" window, updates the visual screen
+     * project & widget database records so the visual screen immediately reflects the edited Kotlin code,
+     * and optionally triggers full APK compilation & signing.
      */
-    fun downloadFloatingWindowToAndroid() {
+    fun applyEditedKotlinCodeToVisualScreen(
+        editedFiles: Map<String, String>,
+        andCompileApk: Boolean = false
+    ) {
         val project = _uiState.value.activeProject ?: return
-        val components = activeComponents.value
+        val currentComponents = activeComponents.value
+        viewModelScope.launch {
+            val parsed = KotlinProjectCodeEngine.parseEditedKotlinToVisualState(
+                originalProject = project,
+                originalComponents = currentComponents,
+                editedFiles = editedFiles
+            )
+            studioDao.updateProject(parsed.updatedProject)
+            studioDao.deleteAllComponentsForProject(project.id)
+            for (comp in parsed.updatedComponents) {
+                studioDao.insertComponent(comp.copy(id = 0L, projectId = project.id))
+            }
+            val reloadedComponents = studioDao.getComponentsForProjectSync(project.id)
+            val refreshedKotlinFiles = KotlinProjectCodeEngine.generateKotlinFilesForProject(
+                parsed.updatedProject,
+                reloadedComponents
+            ).toMutableMap().apply {
+                // Preserve any custom edits in secondary Kotlin tabs while keeping CanvasWorkspaceComponents synced
+                editedFiles.forEach { (k, v) ->
+                    if (k != "src/main/java/com/example/ui/CanvasWorkspaceComponents.kt") {
+                        put(k, v)
+                    }
+                }
+            }
+
+            _uiState.update {
+                it.copy(
+                    activeProject = parsed.updatedProject,
+                    selectedComponentId = null,
+                    showEditCodeDialog = false,
+                    customEditedKotlinFiles = refreshedKotlinFiles,
+                    statusToast = "✅ Compiled Kotlin Code → Visual Screen (${reloadedComponents.size} widgets synced)!"
+                )
+            }
+
+            if (andCompileApk) {
+                downloadFloatingWindowToAndroid(refreshedKotlinFiles)
+            }
+        }
+    }
+
+    /**
+     * Compiles the app created by the user INSIDE Studio Error into a complete, standalone,
+     * installable Android APK with its own unique package name, its own App Name (project.name),
+     * 4-byte-aligned resources.arsc, 4096-byte-aligned native libraries, V1/V2/V3 signatures,
+     * and bundled visual screen & floating window widgets.
+     */
+    fun downloadFloatingWindowToAndroid(customKotlinFiles: Map<String, String>? = null) {
+        val initialProject = _uiState.value.activeProject ?: return
         viewModelScope.launch {
             try {
+                // If the user edited Kotlin code, sync it with the visual screen components before compiling APK
+                val activeCustomFiles = customKotlinFiles ?: _uiState.value.customEditedKotlinFiles
+                var project = initialProject
+                var components = studioDao.getComponentsForProjectSync(initialProject.id)
+                    .ifEmpty { activeComponents.value }
+
+                if (activeCustomFiles.isNotEmpty() &&
+                    activeCustomFiles.containsKey("src/main/java/com/example/ui/CanvasWorkspaceComponents.kt")
+                ) {
+                    val parsed = KotlinProjectCodeEngine.parseEditedKotlinToVisualState(
+                        originalProject = project,
+                        originalComponents = components,
+                        editedFiles = activeCustomFiles
+                    )
+                    project = parsed.updatedProject
+                    studioDao.updateProject(project)
+                    studioDao.deleteAllComponentsForProject(project.id)
+                    for (comp in parsed.updatedComponents) {
+                        studioDao.insertComponent(comp.copy(id = 0L, projectId = project.id))
+                    }
+                    components = studioDao.getComponentsForProjectSync(project.id)
+                    _uiState.update { it.copy(activeProject = project) }
+                }
+
                 val safeSlug = project.name.trim().lowercase(Locale.US)
                     .replace(Regex("[^a-z0-9]+"), "_")
                     .trim('_')
-                    .ifEmpty { "floating_mod_menu" }
-                val fileName = "${safeSlug}_floating_window.apk"
-                val rawJavaSource = generateRawJavaSourceForProject(project, components)
+                    .ifEmpty { "compiled_app" }
+                val fileName = "${safeSlug}.apk"
+                val targetPkg = ApkCompilationEngine.getCompiledAppPackageName(project)
 
-                // Step 1: Show Raw Java source format while building
+                val blueprintFiles = ApkCompilationEngine.generateProjectBlueprintFiles(project, components).toMutableMap()
+                if (activeCustomFiles.isNotEmpty()) {
+                    blueprintFiles.putAll(activeCustomFiles)
+                    // Ensure overlay_config.json and CanvasWorkspaceComponents.kt reflect the synced visual widgets
+                    blueprintFiles["src/main/java/com/example/ui/CanvasWorkspaceComponents.kt"] =
+                        KotlinProjectCodeEngine.generateKotlinFilesForProject(project, components)[
+                            "src/main/java/com/example/ui/CanvasWorkspaceComponents.kt"
+                        ].orEmpty()
+                }
+
+                val rawJavaSource = buildString {
+                    appendLine("// === COMPILED APP: ${project.name} ($targetPkg) ===")
+                    appendLine("// === KOTLIN WIDGET SOURCE: CanvasWorkspaceComponents.kt ===")
+                    appendLine(blueprintFiles["src/main/java/com/example/ui/CanvasWorkspaceComponents.kt"].orEmpty())
+                    appendLine()
+                    appendLine("// === KOTLIN SERVICE SOURCE: FloatingOverlayService.kt ===")
+                    appendLine(blueprintFiles["src/main/java/com/example/service/FloatingOverlayService.kt"].orEmpty())
+                }
+
                 _uiState.update {
                     it.copy(
                         isBuildingApk = true,
+                        buildProgressStepText = "Step 1/3: Compiling '${project.name}' Kotlin Widget Code (${components.size} widgets)...",
                         rawJavaBuildPreview = rawJavaSource,
-                        statusToast = "⚙ Generating Raw Java (FloatingModMenuService.java) & compiling APK..."
+                        statusToast = "⚙ Compiling '${project.name}' ($targetPkg) into standalone APK..."
                     )
                 }
-                delay(550)
+                delay(180)
 
-                val packageBytes = buildFloatingWindowPackageBytes(project, components, rawJavaSource)
+                _uiState.update {
+                    it.copy(
+                        buildProgressStepText = "Step 2/3: Patching Binary AndroidManifest.xml (App: '${project.name}', ID: $targetPkg) & Aligning APK..."
+                    )
+                }
+                delay(180)
 
-                // Always keep a copy in app-accessible Downloads folder
                 val localDownloadsDir = appContext.getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS)
                     ?: File(appContext.filesDir, "downloads").apply { mkdirs() }
                 if (!localDownloadsDir.exists()) localDownloadsDir.mkdirs()
                 val localFile = File(localDownloadsDir, fileName)
-                FileOutputStream(localFile).use { it.write(packageBytes) }
 
-                var savedDisplayLocation = localFile.absolutePath
+                val compilationResult = withContext(Dispatchers.IO) {
+                    ApkCompilationEngine.compileAndSignProjectApk(
+                        appContext,
+                        project,
+                        components,
+                        localFile,
+                        blueprintFiles
+                    )
+                }
 
-                // Also save directly to public Android Downloads via MediaStore on Android 10+
+                _uiState.update {
+                    it.copy(
+                        buildProgressStepText = "Step 3/3: Signing V1 + V2 + V3 APK & Exporting '$fileName' to Android Downloads..."
+                    )
+                }
+                delay(120)
+
+                var savedDisplayLocation = compilationResult.signedApkFile.absolutePath
+
+                // Save compiled & signed APK directly to public Android Downloads via MediaStore on Android 10+
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                    try {
-                        val resolver = appContext.contentResolver
-                        val contentValues = ContentValues().apply {
-                            put(MediaStore.Downloads.DISPLAY_NAME, fileName)
-                            put(MediaStore.Downloads.MIME_TYPE, "application/vnd.android.package-archive")
-                            put(MediaStore.Downloads.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS)
-                            put(MediaStore.Downloads.IS_PENDING, 1)
-                        }
-                        val collection = MediaStore.Downloads.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY)
-                        val itemUri = resolver.insert(collection, contentValues)
-                        if (itemUri != null) {
-                            resolver.openOutputStream(itemUri)?.use { out ->
-                                out.write(packageBytes)
+                    withContext(Dispatchers.IO) {
+                        try {
+                            val resolver = appContext.contentResolver
+                            val collection = MediaStore.Downloads.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY)
+                            try {
+                                resolver.delete(
+                                    collection,
+                                    "${MediaStore.Downloads.DISPLAY_NAME} = ?",
+                                    arrayOf(fileName)
+                                )
+                            } catch (_: Exception) {
                             }
-                            contentValues.clear()
-                            contentValues.put(MediaStore.Downloads.IS_PENDING, 0)
-                            resolver.update(itemUri, contentValues, null, null)
-                            savedDisplayLocation = "Internal Storage/Download/$fileName"
+
+                            val contentValues = ContentValues().apply {
+                                put(MediaStore.Downloads.DISPLAY_NAME, fileName)
+                                put(MediaStore.Downloads.MIME_TYPE, "application/vnd.android.package-archive")
+                                put(MediaStore.Downloads.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS)
+                                put(MediaStore.Downloads.IS_PENDING, 1)
+                            }
+                            val itemUri = resolver.insert(collection, contentValues)
+                            if (itemUri != null) {
+                                resolver.openOutputStream(itemUri)?.use { out ->
+                                    FileInputStream(compilationResult.signedApkFile).use { input ->
+                                        input.copyTo(out, bufferSize = 32768)
+                                    }
+                                }
+                                contentValues.clear()
+                                contentValues.put(MediaStore.Downloads.IS_PENDING, 0)
+                                resolver.update(itemUri, contentValues, null, null)
+                                savedDisplayLocation = "Internal Storage/Download/$fileName"
+                            }
+                        } catch (_: Exception) {
                         }
-                    } catch (_: Exception) {
                     }
                 }
 
-                val sizeKb = (packageBytes.size / 1024.0).coerceAtLeast(1.0)
-                val formattedSize = String.format(Locale.US, "%.1f KB", sizeKb)
+                val sizeBytes = compilationResult.apkSizeBytes
+                val formattedSize = if (sizeBytes >= 1024L * 1024L) {
+                    String.format(Locale.US, "%.2f MB", sizeBytes / (1024.0 * 1024.0))
+                } else {
+                    String.format(Locale.US, "%.1f KB", (sizeBytes / 1024.0).coerceAtLeast(1.0))
+                }
+
                 SoundTriggerPlayer.playSoundTrigger(appContext, null, SoundTriggerPlayer.SOUND_CONFIRM, "")
                 _uiState.update {
                     it.copy(
                         isBuildingApk = false,
+                        buildProgressStepText = "",
                         rawJavaBuildPreview = rawJavaSource,
+                        compiledApkFilePath = compilationResult.signedApkFile.absolutePath,
+                        compiledAppPackageName = compilationResult.compiledPackageName,
+                        compiledAppName = compilationResult.compiledAppName,
                         downloadedFileName = fileName,
-                        downloadedFileSummary = "Compiled Raw Java → '$fileName' ($formattedSize, ${components.size} widgets) into Android Downloads:\n$savedDisplayLocation",
-                        statusToast = "✅ Build Complete: '$fileName' ($formattedSize) saved to Android Downloads!"
+                        downloadedFileSummary = buildString {
+                            appendLine("App Compiled: ${compilationResult.compiledAppName.ifBlank { "(No Name Set)" }}")
+                            appendLine("Package ID: ${compilationResult.compiledPackageName}")
+                            appendLine("Version: v${project.versionName} (Code ${project.versionCode}) • SDK ${project.minSdk}–${project.targetSdk}")
+                            appendLine("Widgets Compiled: ${components.size} interactive widget(s)")
+                            appendLine("APK Size: $formattedSize (Signed V1 + V2 + V3)")
+                            append("Saved to: $savedDisplayLocation")
+                        },
+                        statusToast = "✅ Compiled '${compilationResult.compiledAppName}' APK ($formattedSize)!"
                     )
                 }
             } catch (e: Exception) {
                 _uiState.update {
                     it.copy(
                         isBuildingApk = false,
+                        buildProgressStepText = "",
                         statusToast = "Build failed: ${e.message}"
                     )
                 }
             }
+        }
+    }
+
+    /**
+     * Launches the Android system Package Installer for the newly compiled standalone APK
+     * so the user can install the app they created inside Studio Error with one tap.
+     */
+    fun installCompiledApk(context: Context) {
+        // Stop any running floating overlay first so Android PackageInstaller & Settings never block permission clicks!
+        stopSystemFloatingOverlay()
+        val apkPath = _uiState.value.compiledApkFilePath
+        val apkFile = if (!apkPath.isNullOrBlank()) File(apkPath) else null
+        if (apkFile == null || !apkFile.exists()) {
+            _uiState.update { it.copy(statusToast = "Please tap Build first to compile your APK.") }
+            return
+        }
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O &&
+                !context.packageManager.canRequestPackageInstalls()
+            ) {
+                val permIntent = Intent(
+                    Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES,
+                    Uri.parse("package:${context.packageName}")
+                ).apply {
+                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                }
+                context.startActivity(permIntent)
+                _uiState.update {
+                    it.copy(statusToast = "Allow 'Install unknown apps' then tap Install Compiled APK again.")
+                }
+                return
+            }
+
+            val authority = "${context.packageName}.fileprovider"
+            val apkUri = FileProvider.getUriForFile(context, authority, apkFile)
+            @Suppress("DEPRECATION")
+            val installIntent = Intent(Intent.ACTION_INSTALL_PACKAGE).apply {
+                data = apkUri
+                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                putExtra(Intent.EXTRA_NOT_UNKNOWN_SOURCE, true)
+                putExtra(Intent.EXTRA_INSTALLER_PACKAGE_NAME, context.packageName)
+            }
+            context.startActivity(installIntent)
+            _uiState.update {
+                it.copy(
+                    statusToast = "📲 Opening Android Installer for '${_uiState.value.compiledAppName}'..."
+                )
+            }
+        } catch (e: Exception) {
+            try {
+                val authority = "${context.packageName}.fileprovider"
+                val apkUri = FileProvider.getUriForFile(context, authority, apkFile)
+                val fallbackIntent = Intent(Intent.ACTION_VIEW).apply {
+                    setDataAndType(apkUri, "application/vnd.android.package-archive")
+                    addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                    putExtra(Intent.EXTRA_NOT_UNKNOWN_SOURCE, true)
+                }
+                context.startActivity(fallbackIntent)
+            } catch (_: Exception) {
+                openCompiledAppPreview()
+            }
+        }
+    }
+
+    /**
+     * Opens the compiled standalone app screen directly so the user can immediately run and test
+     * the exact app they built inside Studio Error.
+     */
+    fun openCompiledAppPreview() {
+        val project = _uiState.value.activeProject ?: return
+        val pkg = _uiState.value.compiledAppPackageName.ifBlank {
+            ApkCompilationEngine.getCompiledAppPackageName(project)
+        }
+        _uiState.update {
+            it.copy(
+                destination = StudioDestination.COMPILED_STANDALONE_APP,
+                downloadedFileSummary = null,
+                compiledAppPackageName = pkg,
+                compiledAppName = project.name,
+                statusToast = "▶ Running Compiled App '${project.name}' ($pkg)"
+            )
+        }
+    }
+
+    fun closeCompiledAppPreview() {
+        if (_uiState.value.isBundledStandaloneApk) return
+        _uiState.update {
+            it.copy(
+                destination = StudioDestination.CANVAS_WORKSPACE,
+                statusToast = "Returned to Studio Error Editor for '${it.activeProject?.name ?: "Project"}'."
+            )
         }
     }
 
@@ -929,15 +1424,29 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val components = activeComponents.value
         viewModelScope.launch {
             try {
-                val rawJavaSource = generateRawJavaSourceForProject(project, components)
-                val packageBytes = buildFloatingWindowPackageBytes(project, components, rawJavaSource)
-                appContext.contentResolver.openOutputStream(destUri)?.use { out ->
-                    out.write(packageBytes)
+                val safeSlug = project.name.trim().lowercase(Locale.US)
+                    .replace(Regex("[^a-z0-9]+"), "_")
+                    .trim('_')
+                    .ifEmpty { "floating_mod_menu" }
+                val tempOutFile = File(appContext.cacheDir, "${safeSlug}_custom_export.apk")
+                withContext(Dispatchers.IO) {
+                    val result = ApkCompilationEngine.compileAndSignProjectApk(
+                        appContext,
+                        project,
+                        components,
+                        tempOutFile
+                    )
+                    appContext.contentResolver.openOutputStream(destUri)?.use { out ->
+                        FileInputStream(result.signedApkFile).use { input ->
+                            input.copyTo(out, bufferSize = 32768)
+                        }
+                    }
+                    if (tempOutFile.exists()) tempOutFile.delete()
                 }
                 _uiState.update {
                     it.copy(
                         downloadedFileSummary = null,
-                        statusToast = "✅ Saved compiled APK to selected Android folder!"
+                        statusToast = "✅ Saved compiled & signed APK to selected Android folder!"
                     )
                 }
             } catch (e: Exception) {
@@ -946,151 +1455,5 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 }
             }
         }
-    }
-
-    private fun generateRawJavaSourceForProject(
-        project: StudioProjectEntity,
-        components: List<CanvasComponentEntity>
-    ): String {
-        return buildString {
-            appendLine("package com.floating.modmenu;")
-            appendLine()
-            appendLine("import android.app.Service;")
-            appendLine("import android.content.Intent;")
-            appendLine("import android.graphics.Color;")
-            appendLine("import android.os.IBinder;")
-            appendLine("import android.view.WindowManager;")
-            appendLine("import android.widget.LinearLayout;")
-            appendLine("import android.widget.ScrollView;")
-            appendLine("import android.widget.Switch;")
-            appendLine("import android.widget.Button;")
-            appendLine("import android.widget.SeekBar;")
-            appendLine()
-            appendLine("// Raw Java Floating Mod Menu generated by Studio Error")
-            appendLine("public class FloatingModMenuService extends Service {")
-            appendLine("    public static final String TITLE = \"${project.overlayTitle}\";")
-            appendLine("    public static final int WIDTH_DP = ${project.canvasWidthDp};")
-            appendLine("    public static final int HEIGHT_DP = ${project.canvasHeightDp};")
-            appendLine("    public static final boolean AUTO_FIX_SIZE = ${project.autoFixSize};")
-            appendLine()
-            appendLine("    @Override")
-            appendLine("    public void onCreate() {")
-            appendLine("        super.onCreate();")
-            appendLine("        ScrollView scrollContainer = new ScrollView(this);")
-            appendLine("        LinearLayout modBody = new LinearLayout(this);")
-            appendLine("        modBody.setOrientation(LinearLayout.VERTICAL);")
-            components.forEachIndexed { idx, c ->
-                appendLine("        // Widget #${idx + 1}: ${c.label} [${c.type}] -> Offset ${c.byteOffsetHex} (ON=${c.onPayloadHex}, OFF=${c.offPayloadHex})")
-                appendLine("        // ON Sound: ${c.soundTrigger}, OFF Sound: ${c.offSoundTrigger}")
-            }
-            appendLine("        scrollContainer.addView(modBody);")
-            appendLine("    }")
-            appendLine()
-            appendLine("    @Override")
-            appendLine("    public IBinder onBind(Intent intent) { return null; }")
-            appendLine("}")
-        }
-    }
-
-    private fun buildFloatingWindowPackageBytes(
-        project: StudioProjectEntity,
-        components: List<CanvasComponentEntity>,
-        rawJavaSource: String = generateRawJavaSourceForProject(project, components)
-    ): ByteArray {
-        val baos = ByteArrayOutputStream()
-        ZipOutputStream(baos).use { zos ->
-            // 0. Raw Java Source Code (FloatingModMenuService.java)
-            zos.putNextEntry(ZipEntry("src/main/java/com/floating/modmenu/FloatingModMenuService.java"))
-            zos.write(rawJavaSource.toByteArray(Charsets.UTF_8))
-            zos.closeEntry()
-            // 1. AndroidManifest.xml
-            val manifestXml = buildString {
-                appendLine("""<?xml version="1.0" encoding="utf-8"?>""")
-                appendLine("""<manifest xmlns:android="http://schemas.android.com/apk/res/android" package="com.floating.modmenu">""")
-                appendLine("""    <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />""")
-                appendLine("""    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />""")
-                appendLine("""    <application android:label="${project.name}">""")
-                appendLine("""        <service android:name=".FloatingModMenuService" android:exported="false" />""")
-                appendLine("""    </application>""")
-                appendLine("""</manifest>""")
-            }
-            zos.putNextEntry(ZipEntry("AndroidManifest.xml"))
-            zos.write(manifestXml.toByteArray(Charsets.UTF_8))
-            zos.closeEntry()
-
-            // 2. res/layout/floating_window.xml
-            val layoutXml = buildString {
-                appendLine("""<?xml version="1.0" encoding="utf-8"?>""")
-                appendLine("""<!-- Floating Window: ${project.overlayTitle} (${project.canvasWidthDp}dp x ${project.canvasHeightDp}dp) -->""")
-                appendLine("""<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android" """)
-                appendLine("""    android:layout_width="${project.canvasWidthDp}dp" """)
-                appendLine("""    android:layout_height="${project.canvasHeightDp}dp" """)
-                appendLine("""    android:background="${project.canvasBgColorHex}">""")
-                for (comp in components) {
-                    val tag = when (comp.type) {
-                        ComponentWidgetType.TOGGLE.name -> "Switch"
-                        ComponentWidgetType.BUTTON.name -> "Button"
-                        ComponentWidgetType.SLIDER.name -> "SeekBar"
-                        ComponentWidgetType.INPUT.name -> "EditText"
-                        ComponentWidgetType.IMAGE.name -> "ImageView"
-                        else -> "TextView"
-                    }
-                    appendLine("""    <$tag""")
-                    appendLine("""        android:id="@+id/widget_${comp.id}" """)
-                    appendLine("""        android:layout_width="${comp.widthDp}dp" """)
-                    appendLine("""        android:layout_height="${comp.heightDp}dp" """)
-                    appendLine("""        android:layout_marginStart="${comp.posXDp}dp" """)
-                    appendLine("""        android:layout_marginTop="${comp.posYDp}dp" """)
-                    appendLine("""        android:text="${comp.label}" """)
-                    appendLine("""        android:background="${comp.bgColorHex}" """)
-                    appendLine("""        android:textColor="${comp.textColorHex}" />""")
-                }
-                appendLine("""</FrameLayout>""")
-            }
-            zos.putNextEntry(ZipEntry("res/layout/floating_window.xml"))
-            zos.write(layoutXml.toByteArray(Charsets.UTF_8))
-            zos.closeEntry()
-
-            // 3. assets/overlay_config.json
-            val configJson = buildString {
-                appendLine("{")
-                appendLine("""  "projectName": "${project.name}",""")
-                appendLine("""  "overlayTitle": "${project.overlayTitle}",""")
-                appendLine("""  "canvasWidthDp": ${project.canvasWidthDp},""")
-                appendLine("""  "canvasHeightDp": ${project.canvasHeightDp},""")
-                appendLine("""  "canvasBgColorHex": "${project.canvasBgColorHex}",""")
-                appendLine("""  "components": [""")
-                components.forEachIndexed { idx, c ->
-                    val comma = if (idx < components.lastIndex) "," else ""
-                    appendLine(
-                        """    {"id": ${c.id}, "type": "${c.type}", "label": "${c.label}", "x": ${c.posXDp}, "y": ${c.posYDp}, "width": ${c.widthDp}, "height": ${c.heightDp}, "bgHex": "${c.bgColorHex}", "textHex": "${c.textColorHex}", "onSound": "${c.soundTrigger}", "offSound": "${c.offSoundTrigger}", "targetFile": "${c.targetFilePath}", "offsetHex": "${c.byteOffsetHex}", "onHex": "${c.onPayloadHex}", "offHex": "${c.offPayloadHex}", "sliderMax": ${c.sliderMax}}$comma"""
-                    )
-                }
-                appendLine("  ]")
-                appendLine("}")
-            }
-            zos.putNextEntry(ZipEntry("assets/overlay_config.json"))
-            zos.write(configJson.toByteArray(Charsets.UTF_8))
-            zos.closeEntry()
-
-            // 4. Bundle any custom images or ON/OFF audio files attached to components
-            for (comp in components) {
-                listOf(
-                    comp.customImagePath to "assets/images/img_${comp.id}.jpg",
-                    comp.customSoundPath to "assets/sounds/on_snd_${comp.id}.mp3",
-                    comp.offCustomSoundPath to "assets/sounds/off_snd_${comp.id}.mp3"
-                ).forEach { (path, entryName) ->
-                    if (path.isNotBlank()) {
-                        val f = File(path.trim())
-                        if (f.exists() && f.isFile) {
-                            zos.putNextEntry(ZipEntry(entryName))
-                            FileInputStream(f).use { input -> input.copyTo(zos) }
-                            zos.closeEntry()
-                        }
-                    }
-                }
-            }
-        }
-        return baos.toByteArray()
     }
 }

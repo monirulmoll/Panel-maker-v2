@@ -1,0 +1,70 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/floating_overlay_root"
+    android:layout_width="216dp"
+    android:layout_height="wrap_content"
+    android:background="#1E293B"
+    android:orientation="vertical">
+
+    <!-- Draggable Floating Mod Menu Header Bar -->
+    <LinearLayout
+        android:id="@+id/floating_header_bar"
+        android:layout_width="match_parent"
+        android:layout_height="38dp"
+        android:background="#2563EB"
+        android:gravity="center_vertical"
+        android:orientation="horizontal"
+        android:paddingStart="12dp"
+        android:paddingEnd="8dp">
+
+        <TextView
+            android:id="@+id/tv_floating_title"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:ellipsize="end"
+            android:singleLine="true"
+            android:text="Floating Mod Panel"
+            android:textColor="#FFFFFF"
+            android:textSize="13sp"
+            android:textStyle="bold" />
+
+        <TextView
+            android:id="@+id/btn_floating_close"
+            android:layout_width="28dp"
+            android:layout_height="28dp"
+            android:gravity="center"
+            android:text="✕"
+            android:textColor="#FFFFFF"
+            android:textSize="14sp"
+            android:textStyle="bold" />
+    </LinearLayout>
+
+    <!-- Dynamic Floating Canvas Frame (Holds OverflowOnlyScrollLayout + User Widgets) -->
+    <FrameLayout
+        android:id="@+id/floating_canvas_frame"
+        android:layout_width="216dp"
+        android:layout_height="290dp"
+        android:background="#1E293B">
+
+        <LinearLayout
+            android:id="@+id/floating_widgets_stack"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical"
+            android:padding="8dp" />
+
+        <TextView
+            android:id="@+id/btn_floating_resize_handle"
+            android:layout_width="24dp"
+            android:layout_height="24dp"
+            android:layout_gravity="bottom|end"
+            android:background="#0288D1"
+            android:gravity="center"
+            android:text="↘"
+            android:textColor="#FFFFFF"
+            android:textSize="12sp"
+            android:textStyle="bold" />
+    </FrameLayout>
+
+</LinearLayout>

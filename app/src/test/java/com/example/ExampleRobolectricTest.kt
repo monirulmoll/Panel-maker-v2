@@ -86,4 +86,99 @@ class ExampleRobolectricTest {
             assertEquals(0x7F, byteVal)
         }
     }
+
+    @Test
+    fun `verify blueprint generation and signed apk compilation engine`() {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val project = com.example.data.StudioProjectEntity(
+            id = 1L,
+            name = "My Floating Utility",
+            overlayTitle = "Floating Mod Panel",
+            canvasWidthDp = 216,
+            canvasHeightDp = 290,
+            canvasBgColorHex = "#1E293B",
+            defaultTargetFilePath = File(context.filesDir, "overlay_state.bin").absolutePath,
+            autoFixSize = true
+        )
+        val components = listOf(
+            CanvasComponentEntity(
+                id = 1L,
+                projectId = 1L,
+                type = "TOGGLE",
+                label = "esp hack",
+                posXDp = 10,
+                posYDp = 10,
+                widthDp = 196,
+                heightDp = 44,
+                byteOffsetHex = "0x04",
+                onPayloadHex = "0x01",
+                offPayloadHex = "0x00",
+                targetFilePath = File(context.filesDir, "overlay_state.bin").absolutePath
+            ),
+            CanvasComponentEntity(
+                id = 2L,
+                projectId = 1L,
+                type = "BUTTON",
+                label = "teleport hack",
+                posXDp = 10,
+                posYDp = 62,
+                widthDp = 176,
+                heightDp = 44,
+                byteOffsetHex = "0x08",
+                onPayloadHex = "0xFF",
+                offPayloadHex = "0x00",
+                targetFilePath = File(context.filesDir, "overlay_state.bin").absolutePath
+            )
+        )
+
+        val blueprintFiles = com.example.blueprint.ApkCompilationEngine.generateProjectBlueprintFiles(project, components)
+        assertTrue(blueprintFiles.containsKey("AndroidManifest.xml"))
+        assertTrue(blueprintFiles.containsKey("build.gradle"))
+        assertTrue(blueprintFiles.containsKey("src/main/java/com/floating/modmenu/MainActivity.java"))
+        assertTrue(blueprintFiles.containsKey("src/main/java/com/floating/modmenu/FloatingModMenuService.java"))
+        assertTrue(blueprintFiles.containsKey("src/main/java/com/floating/modmenu/BinaryOffsetPatcher.java"))
+        assertTrue(blueprintFiles.containsKey("src/main/res/layout/activity_main.xml"))
+        assertTrue(blueprintFiles.containsKey("src/main/res/layout/inspector_dock.xml"))
+        assertTrue(blueprintFiles.containsKey("src/main/res/layout/floating_view.xml"))
+
+        val outApk = File(context.cacheDir, "test_compiled_signed.apk")
+        if (outApk.exists()) outApk.delete()
+
+        val result = com.example.blueprint.ApkCompilationEngine.compileAndSignProjectApk(
+            context,
+            project,
+            components,
+            outApk
+        )
+        assertTrue(result.signedApkFile.exists())
+        assertTrue("Compiled APK must be > 1 MB, was ${result.apkSizeBytes}", result.apkSizeBytes > 1_000_000L)
+
+        val verifier = com.android.apksig.ApkVerifier.Builder(result.signedApkFile)
+            .setMinCheckedPlatformVersion(24)
+            .build()
+        val verifyResult = verifier.verify()
+        assertTrue("APK signature verification failed: ${verifyResult.errors}", verifyResult.isVerified)
+        assertTrue(verifyResult.isVerifiedUsingV2Scheme || verifyResult.isVerifiedUsingV3Scheme)
+
+        java.util.zip.ZipFile(result.signedApkFile).use { zip ->
+            val arsc = zip.getEntry("resources.arsc")
+            val dex = zip.getEntry("classes.dex")
+            val config = zip.getEntry("assets/overlay_config.json")
+            val genService = zip.getEntry("assets/generated_project/src/main/java/com/floating/modmenu/FloatingModMenuService.java")
+            val genPatcher = zip.getEntry("assets/generated_project/src/main/java/com/floating/modmenu/BinaryOffsetPatcher.java")
+            assertTrue("resources.arsc must exist and be STORED (0)", arsc != null && arsc.method == java.util.zip.ZipEntry.STORED)
+            assertTrue("classes.dex must exist in compiled APK", dex != null)
+            assertTrue("assets/overlay_config.json must be injected in signed APK", config != null)
+            assertTrue("Generated FloatingModMenuService.java must be packaged in signed APK", genService != null)
+            assertTrue("Generated BinaryOffsetPatcher.java must be packaged in signed APK", genPatcher != null)
+        }
+
+        // Verify XML layouts and Java blueprint views inflate cleanly
+        val launcherView = com.example.blueprint.ProjectLauncherJavaView(context)
+        launcherView.submitProjects(listOf(project))
+        val canvasView = com.example.blueprint.EmptyCanvasWorkspaceView(context)
+        canvasView.bindWorkspaceState(project, components, 1L)
+        val inspectorView = com.example.blueprint.BottomPropertyInspectorView(context)
+        inspectorView.bindComponent(components[0])
+    }
 }

@@ -36,6 +36,7 @@ import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.CheckBox
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.CreditCard
+import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.EditAttributes
 import androidx.compose.material.icons.filled.Image
 import androidx.compose.material.icons.filled.LinearScale
@@ -68,6 +69,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
@@ -213,6 +215,7 @@ fun SketchwareStudioSplitWorkspace(
     onResizeComponent: (CanvasComponentEntity, Int, Int) -> Unit = { _, _, _ -> },
     onResizeCanvas: (Int, Int) -> Unit,
     onToggleAutoFixSize: () -> Unit = {},
+    onOpenEditFloatingPanel: () -> Unit = {},
     onTriggerComponentLive: (CanvasComponentEntity, String?) -> Unit,
     onClearCanvas: () -> Unit,
     modifier: Modifier = Modifier
@@ -243,6 +246,7 @@ fun SketchwareStudioSplitWorkspace(
             SketchwarePaletteEntry("Switch", Icons.Default.CheckBox, Color(0xFF10B981), ComponentWidgetType.TOGGLE, 196, 44, "#FFFFFF", "#0F172A", "add_toggle_widget"),
             SketchwarePaletteEntry("Button", Icons.Default.SmartButton, Color(0xFF00C853), ComponentWidgetType.BUTTON, 180, 42, "#334155", "#FFFFFF", "add_button_widget"),
             SketchwarePaletteEntry("Slide Bar 0-100", Icons.Default.LinearScale, Color(0xFFEF4444), ComponentWidgetType.SLIDER, 196, 54, "#FFFFFF", "#0F172A", "add_slider_widget"),
+            SketchwarePaletteEntry("Open Link", Icons.Default.Add, Color(0xFF0288D1), ComponentWidgetType.LINK, 190, 42, "#0F172A", "#38BDF8", "add_link_widget"),
             SketchwarePaletteEntry("TextView", Icons.Default.TextFields, Color(0xFF334155), ComponentWidgetType.TEXT, 170, 34, "#FDE047", "#0288D1", "add_text_widget"),
             SketchwarePaletteEntry("EditText", Icons.Default.EditAttributes, Color(0xFF475569), ComponentWidgetType.INPUT, 190, 42, "#FFFFFF", "#0F172A", "add_input_widget"),
             SketchwarePaletteEntry("ImageView", Icons.Default.Image, Color(0xFF8B5CF6), ComponentWidgetType.IMAGE, 64, 64, "#1E293B", "#FFFFFF", "add_image_widget")
@@ -423,17 +427,48 @@ fun SketchwareStudioSplitWorkspace(
                             modifier = Modifier.weight(1f)
                         )
 
-                        if (components.isNotEmpty()) {
-                            Text(
-                                text = "Clear All",
-                                color = Color(0xFFFECACA),
-                                fontSize = 10.sp,
-                                fontWeight = FontWeight.Bold,
-                                modifier = Modifier
-                                    .clickable { onClearCanvas() }
-                                    .padding(horizontal = 4.dp, vertical = 1.dp)
-                                    .testTag("clear_canvas_button")
-                            )
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            Surface(
+                                onClick = onOpenEditFloatingPanel,
+                                color = Color(0xFF0F172A),
+                                shape = RoundedCornerShape(4.dp),
+                                modifier = Modifier.testTag("edit_floating_panel_button")
+                            ) {
+                                Row(
+                                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(4.dp)
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.Edit,
+                                        contentDescription = "Edit Floating Panel Name & Logo",
+                                        tint = Color(0xFF38BDF8),
+                                        modifier = Modifier.size(11.dp)
+                                    )
+                                    Text(
+                                        text = "Edit Panel Name & Logo",
+                                        color = Color(0xFF38BDF8),
+                                        fontSize = 9.sp,
+                                        fontWeight = FontWeight.Bold
+                                    )
+                                }
+                            }
+
+                            if (components.isNotEmpty()) {
+                                Text(
+                                    text = "Clear All",
+                                    color = Color(0xFFFECACA),
+                                    fontSize = 10.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    modifier = Modifier
+                                        .clickable { onClearCanvas() }
+                                        .padding(horizontal = 4.dp, vertical = 1.dp)
+                                        .testTag("clear_canvas_button")
+                                )
+                            }
                         }
                     }
 
@@ -454,6 +489,7 @@ fun SketchwareStudioSplitWorkspace(
                             onMoveComponent = onMoveComponent,
                             onResizeComponent = onResizeComponent,
                             onResizeCanvas = onResizeCanvas,
+                            onOpenEditFloatingPanel = onOpenEditFloatingPanel,
                             onTriggerComponentLive = onTriggerComponentLive
                         )
                     }
@@ -539,6 +575,7 @@ fun InteractiveFloatingCanvasWorkspace(
     onMoveComponent: (CanvasComponentEntity, Int, Int) -> Unit,
     onResizeComponent: (CanvasComponentEntity, Int, Int) -> Unit = { _, _, _ -> },
     onResizeCanvas: (Int, Int) -> Unit,
+    onOpenEditFloatingPanel: () -> Unit = {},
     onTriggerComponentLive: (CanvasComponentEntity, String?) -> Unit,
     modifier: Modifier = Modifier
 ) {
@@ -548,11 +585,19 @@ fun InteractiveFloatingCanvasWorkspace(
     var liveCanvasDeltaHdp by remember(project.canvasHeightDp) { mutableIntStateOf(0) }
     var cropAccumW by remember { mutableFloatStateOf(0f) }
     var cropAccumH by remember { mutableFloatStateOf(0f) }
+    var isPreviewMinimizedToGoalLogo by remember { mutableStateOf(false) }
+
+    val floatingLogoBitmap = remember(project.floatingLogoPath) {
+        if (project.floatingLogoPath.isNotBlank()) {
+            val f = File(project.floatingLogoPath)
+            if (f.exists()) BitmapFactory.decodeFile(f.absolutePath)?.asImageBitmap() else null
+        } else null
+    }
 
     val displayCanvasWidthDp = (project.canvasWidthDp + liveCanvasDeltaWdp).coerceIn(170, 420)
     val displayCanvasHeightDp = (project.canvasHeightDp + liveCanvasDeltaHdp).coerceIn(160, 620)
 
-    val canvasBgColor = parseComposeColor(project.canvasBgColorHex, Color(0xFFF8FAFC))
+    val canvasBgColor = parseComposeColor(project.canvasBgColorHex, Color.White)
     val isAutoFixSize = project.autoFixSize
 
     // Visual Screen Overflow Detection:
@@ -603,6 +648,55 @@ fun InteractiveFloatingCanvasWorkspace(
         modifier = modifier,
         horizontalAlignment = Alignment.Start
     ) {
+        if (isPreviewMinimizedToGoalLogo) {
+            // Live Preview of the Collapsed Round ("Goal" / गोल) Floating Logo Bubble in Studio!
+            val bubbleLabel = project.overlayTitle.trim().ifEmpty { project.name.trim().ifEmpty { "Float" } }
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
+                modifier = Modifier.padding(8.dp)
+            ) {
+                Box(
+                    modifier = Modifier
+                        .size(58.dp)
+                        .clip(CircleShape)
+                        .background(Color(0xFF2563EB))
+                        .border(BorderStroke(2.dp, Color(0xFF0288D1)), CircleShape)
+                        .clickable { isPreviewMinimizedToGoalLogo = false }
+                        .testTag("studio_preview_goal_logo_bubble"),
+                    contentAlignment = Alignment.Center
+                ) {
+                    if (floatingLogoBitmap != null) {
+                        Image(
+                            bitmap = floatingLogoBitmap,
+                            contentDescription = "Goal Logo Bubble",
+                            contentScale = ContentScale.Crop,
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .clip(CircleShape)
+                        )
+                    } else {
+                        Text(
+                            text = bubbleLabel,
+                            color = Color.White,
+                            fontSize = 10.sp,
+                            fontWeight = FontWeight.ExtraBold,
+                            textAlign = TextAlign.Center,
+                            maxLines = 2,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.padding(4.dp)
+                        )
+                    }
+                }
+                Text(
+                    text = "Tap round Goal Logo to expand panel back",
+                    color = Color(0xFF475569),
+                    fontSize = 11.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    modifier = Modifier.clickable { isPreviewMinimizedToGoalLogo = false }
+                )
+            }
+        } else {
         // Outer Box holding the Floating Mod Menu Card + Image-Crop Endpoint Handles
         Box(
             modifier = Modifier
@@ -620,51 +714,67 @@ fun InteractiveFloatingCanvasWorkspace(
                 )
             ) {
                 Column {
-                    // Floating Window Header Bar
+                    // Floating Panel Header Bar: Shows circular Floating Goal Logo (if set), Floating Window Name,
+                    // '✏️' Edit button to edit Floating Panel Name & Logo, and '✕' button to collapse into round Goal Logo!
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .background(Color(0xFFE2E8F0))
-                            .border(BorderStroke(1.dp, Color(0xFF94A3B8)))
+                            .background(Color(0xFF2563EB))
                             .padding(horizontal = 8.dp, vertical = 6.dp),
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.SpaceBetween
                     ) {
-                        Surface(
-                            color = Color(0xFFbae6fd),
-                            shape = RoundedCornerShape(4.dp),
-                            modifier = Modifier.weight(1f)
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(6.dp),
+                            modifier = Modifier
+                                .weight(1f)
+                                .clickable { onOpenEditFloatingPanel() }
+                                .testTag("canvas_header_edit_panel_button")
                         ) {
+                            if (floatingLogoBitmap != null) {
+                                Image(
+                                    bitmap = floatingLogoBitmap,
+                                    contentDescription = "Floating Panel Logo",
+                                    contentScale = ContentScale.Crop,
+                                    modifier = Modifier
+                                        .size(22.dp)
+                                        .clip(CircleShape)
+                                        .border(BorderStroke(1.dp, Color.White), CircleShape)
+                                )
+                            }
                             Text(
-                                text = project.overlayTitle,
-                                color = Color(0xFFEAB308),
-                                fontWeight = FontWeight.ExtraBold,
-                                fontSize = 13.sp,
-                                textAlign = TextAlign.Center,
-                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                text = project.overlayTitle.ifBlank {
+                                    project.name.ifBlank { "Set Floating Panel Name & Logo" }
+                                },
+                                color = Color.White,
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 12.sp,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                                modifier = Modifier.weight(1f, fill = false)
+                            )
+                            Icon(
+                                imageVector = Icons.Default.Edit,
+                                contentDescription = "Edit Floating Panel Name & Logo",
+                                tint = Color(0xFFBAE6FD),
+                                modifier = Modifier.size(13.dp)
                             )
                         }
 
-                        Spacer(modifier = Modifier.width(8.dp))
-
-                        Surface(
-                            shape = CircleShape,
+                        Text(
+                            text = "✕",
                             color = Color.White,
-                            border = BorderStroke(2.dp, Color(0xFF22C55E)),
-                            modifier = Modifier.size(22.dp)
-                        ) {
-                            Box(contentAlignment = Alignment.Center) {
-                                Icon(
-                                    imageVector = Icons.Default.Close,
-                                    contentDescription = "Floating Close Indicator",
-                                    tint = Color(0xFF22C55E),
-                                    modifier = Modifier.size(13.dp)
-                                )
-                            }
-                        }
+                            fontWeight = FontWeight.ExtraBold,
+                            fontSize = 13.sp,
+                            modifier = Modifier
+                                .clickable { isPreviewMinimizedToGoalLogo = true }
+                                .padding(horizontal = 6.dp, vertical = 1.dp)
+                                .testTag("canvas_header_minimize_goal_button")
+                        )
                     }
 
-                    // THE MOBILE CANVAS WORKSPACE (100% EMPTY BY DEFAULT)
+                    // THE MOBILE CANVAS WORKSPACE (100% EMPTY BACKGROUND — ONLY USER-CREATED WIDGETS)
                     Box(
                         modifier = Modifier
                             .width(displayCanvasWidthDp.dp)
@@ -678,91 +788,12 @@ fun InteractiveFloatingCanvasWorkspace(
                             }
                             .testTag("blank_canvas_surface")
                     ) {
-                        // Subtle Blueprint Grid + Image-Crop Rule-of-Thirds Guide Lines in Edit Mode
-                        if (!isLivePreviewMode) {
-                            Canvas(modifier = Modifier.fillMaxSize()) {
-                                val stepPx = 18.dp.toPx()
-                                val gridColor = Color(0xFF94A3B8).copy(alpha = 0.18f)
-                                var x = 0f
-                                while (x <= size.width) {
-                                    drawLine(gridColor, Offset(x, 0f), Offset(x, size.height), strokeWidth = 1f)
-                                    x += stepPx
-                                }
-                                var y = 0f
-                                while (y <= size.height) {
-                                    drawLine(gridColor, Offset(0f, y), Offset(size.width, y), strokeWidth = 1f)
-                                    y += stepPx
-                                }
-
-                                // Image-Crop L-shaped Corner Brackets inside the canvas corners (Hidden when Auto Fix Size is ON)
-                                if (!isAutoFixSize) {
-                                    val bracketLen = 18.dp.toPx()
-                                    val bracketStroke = 3.5.dp.toPx()
-                                    val cropColor = Color(0xFF0288D1)
-
-                                    // Top-Left L bracket
-                                    drawLine(cropColor, Offset(0f, 0f), Offset(bracketLen, 0f), bracketStroke)
-                                    drawLine(cropColor, Offset(0f, 0f), Offset(0f, bracketLen), bracketStroke)
-
-                                    // Top-Right L bracket
-                                    drawLine(cropColor, Offset(size.width - bracketLen, 0f), Offset(size.width, 0f), bracketStroke)
-                                    drawLine(cropColor, Offset(size.width, 0f), Offset(size.width, bracketLen), bracketStroke)
-
-                                    // Bottom-Left L bracket
-                                    drawLine(cropColor, Offset(0f, size.height - bracketLen), Offset(0f, size.height), bracketStroke)
-                                    drawLine(cropColor, Offset(0f, size.height), Offset(bracketLen, size.height), bracketStroke)
-
-                                    // Bottom-Right L bracket
-                                    drawLine(cropColor, Offset(size.width - bracketLen, size.height), Offset(size.width, size.height), bracketStroke)
-                                    drawLine(cropColor, Offset(size.width, size.height - bracketLen), Offset(size.width, size.height), bracketStroke)
-                                }
-                            }
-                        }
-
-                        // 100% Empty State Prompt when no user components have been added yet
                         if (components.isEmpty()) {
-                            Column(
+                            Box(
                                 modifier = Modifier
                                     .fillMaxSize()
-                                    .padding(20.dp)
-                                    .testTag("empty_canvas_placeholder"),
-                                verticalArrangement = Arrangement.Center,
-                                horizontalAlignment = Alignment.CenterHorizontally
-                            ) {
-                                Surface(
-                                    shape = CircleShape,
-                                    color = Color(0xFF0288D1).copy(alpha = 0.15f),
-                                    modifier = Modifier.size(48.dp)
-                                ) {
-                                    Box(contentAlignment = Alignment.Center) {
-                                        Icon(
-                                            imageVector = Icons.Default.Add,
-                                            contentDescription = "Empty Canvas",
-                                            tint = Color(0xFF0288D1),
-                                            modifier = Modifier.size(26.dp)
-                                        )
-                                    }
-                                }
-                                Spacer(modifier = Modifier.height(10.dp))
-                                Text(
-                                    text = stringResource(R.string.empty_canvas_title),
-                                    color = Color.White,
-                                    fontWeight = FontWeight.Bold,
-                                    fontSize = 13.sp,
-                                    textAlign = TextAlign.Center,
-                                    modifier = Modifier
-                                        .background(Color(0xFF0F172A).copy(alpha = 0.75f), RoundedCornerShape(6.dp))
-                                        .padding(horizontal = 8.dp, vertical = 4.dp)
-                                )
-                                Spacer(modifier = Modifier.height(6.dp))
-                                Text(
-                                    text = "Tap any widget on the Left Palette to add it, or drag the blue crop handles on the edges/corners to resize this Floating Mod Menu.",
-                                    color = Color(0xFF64748B),
-                                    fontSize = 11.sp,
-                                    textAlign = TextAlign.Center,
-                                    lineHeight = 15.sp
-                                )
-                            }
+                                    .testTag("empty_canvas_placeholder")
+                            )
                         } else {
                             // Scroll is ZERO (enabled = false) until any widget goes outside the visual screen;
                             // as soon as a widget goes outside top or bottom, scroll turns ON (enabled = true)!
@@ -785,6 +816,7 @@ fun InteractiveFloatingCanvasWorkspace(
                                         CanvasElementView(
                                             component = comp,
                                             topOverflowShiftDp = topOverflowShiftDp,
+                                            isVisualOverflowing = isVisualOverflowing,
                                             isSelected = comp.id == selectedComponentId,
                                             isLivePreviewMode = false,
                                             isAutoFixSize = isAutoFixSize,
@@ -972,6 +1004,7 @@ fun InteractiveFloatingCanvasWorkspace(
                 }
             }
         }
+        }
     }
     }
 }
@@ -980,6 +1013,7 @@ fun InteractiveFloatingCanvasWorkspace(
 private fun CanvasElementView(
     component: CanvasComponentEntity,
     topOverflowShiftDp: Int = 0,
+    isVisualOverflowing: Boolean = false,
     isSelected: Boolean,
     isLivePreviewMode: Boolean,
     isAutoFixSize: Boolean = false,
@@ -1027,8 +1061,9 @@ private fun CanvasElementView(
         else -> Color(0xFF475569)
     }
 
-    val dragGestureModifier = if (!isLivePreviewMode && !isAutoFixSize) {
-        Modifier.pointerInput(component.id, isLivePreviewMode, isAutoFixSize) {
+    val canDragDirectly = !isLivePreviewMode && !isAutoFixSize && (!isVisualOverflowing || isSelected)
+    val dragGestureModifier = if (canDragDirectly) {
+        Modifier.pointerInput(component.id, isLivePreviewMode, isAutoFixSize, isVisualOverflowing, isSelected) {
             detectDragGestures(
                 onDragStart = {
                     liveDragXPx = 0f
@@ -1307,6 +1342,43 @@ private fun CanvasElementView(
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis
                     )
+                }
+            }
+
+            ComponentWidgetType.LINK.name -> {
+                Row(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .background(bgColor)
+                        .padding(horizontal = 10.dp, vertical = 4.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Text(
+                        text = "🌐 ${component.label}",
+                        color = txtColor,
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.ExtraBold,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier
+                            .weight(1f)
+                            .padding(end = 6.dp)
+                    )
+                    Surface(
+                        onClick = { onToggleState() },
+                        color = Color(0xFF0288D1),
+                        shape = RoundedCornerShape(999.dp),
+                        border = BorderStroke(1.dp, Color.White)
+                    ) {
+                        Text(
+                            text = "OPEN ↗",
+                            color = Color.White,
+                            fontSize = 9.sp,
+                            fontWeight = FontWeight.ExtraBold,
+                            modifier = Modifier.padding(horizontal = 7.dp, vertical = 2.dp)
+                        )
+                    }
                 }
             }
 
