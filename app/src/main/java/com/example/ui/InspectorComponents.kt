@@ -359,40 +359,7 @@ fun PropertyInspectorBottomDock(
                     }
                 }
 
-                Spacer(modifier = Modifier.width(6.dp))
-
-                // Prominent SAVE Button Pill in the Inspector Header
-                Surface(
-                    onClick = {
-                        val latest = buildEditedComponent()
-                        onSaveDesign(latest)
-                    },
-                    shape = RoundedCornerShape(6.dp),
-                    color = Color(0xFF00C853),
-                    border = BorderStroke(1.dp, Color.White),
-                    modifier = Modifier.testTag("inspector_save_design_button")
-                ) {
-                    Row(
-                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(4.dp)
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.Save,
-                            contentDescription = "Save Widget Design",
-                            tint = Color.White,
-                            modifier = Modifier.size(13.dp)
-                        )
-                        Text(
-                            text = "Save",
-                            color = Color.White,
-                            fontSize = 10.sp,
-                            fontWeight = FontWeight.ExtraBold
-                        )
-                    }
-                }
-
-                // Right: Duplicate/Delete/Close icons
+                // Right: Duplicate/Delete/Close icons (All changes auto-save in real time)
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     IconButton(
                         onClick = {
@@ -425,8 +392,7 @@ fun PropertyInspectorBottomDock(
                     }
                     IconButton(
                         onClick = {
-                            val latest = buildEditedComponent()
-                            onSaveDesign(latest)
+                            onUpdateComponent(buildEditedComponent())
                             onCloseDock()
                         },
                         modifier = Modifier
@@ -435,7 +401,7 @@ fun PropertyInspectorBottomDock(
                     ) {
                         Icon(
                             imageVector = Icons.Default.Close,
-                            contentDescription = "Save & Close Inspector",
+                            contentDescription = "Close Inspector",
                             tint = Color.White,
                             modifier = Modifier.size(16.dp)
                         )
@@ -443,7 +409,7 @@ fun PropertyInspectorBottomDock(
                 }
             }
 
-            // 2. COMPACT PROPERTY ACTION CARDS ROW ("save", "convert", "edit code", "auto fix", "path", "original", "change", "width", "height", "bg color", "on sound", "off sound")
+            // 2. COMPACT PROPERTY ACTION CARDS ROW ("convert", "edit code", "auto fix", "path", "original", "change", "width", "height", "bg color", "on sound", "off sound")
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -457,16 +423,6 @@ fun PropertyInspectorBottomDock(
                         .padding(end = 60.dp),
                     horizontalArrangement = Arrangement.spacedBy(6.dp)
                 ) {
-                    SketchwarePropertySquareCard(
-                        title = "save",
-                        icon = Icons.Default.Save,
-                        iconTint = Color(0xFF00C853),
-                        isSelected = false,
-                        onClick = {
-                            val latest = buildEditedComponent()
-                            onSaveDesign(latest)
-                        }
-                    )
                     SketchwarePropertySquareCard(
                         title = "convert",
                         icon = Icons.Default.SyncAlt,
@@ -487,7 +443,7 @@ fun PropertyInspectorBottomDock(
                             val nextType = order[nextIdx]
                             currentType = nextType
                             val updated = buildEditedComponent(typeOverride = nextType)
-                            onSaveDesign(updated)
+                            onUpdateComponent(updated)
                         }
                     )
                     SketchwarePropertySquareCard(
@@ -700,7 +656,7 @@ fun PropertyInspectorBottomDock(
                                     onClick = {
                                         currentType = typeKey
                                         val updated = buildEditedComponent(typeOverride = typeKey)
-                                        onSaveDesign(updated)
+                                        onUpdateComponent(updated)
                                     },
                                     label = { Text(displayLabel, fontSize = 10.sp, fontWeight = FontWeight.Bold) }
                                 )
@@ -953,8 +909,7 @@ fun PropertyInspectorBottomDock(
                                         val clean = targetFileInput.trim()
                                         val isExtPath = clean.startsWith("/storage/") || clean.startsWith("/sdcard/")
                                         isExtPath &&
-                                            android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.R &&
-                                            !android.os.Environment.isExternalStorageManager()
+                                            !com.example.engine.LocalConfigStateWriter.hasStoragePermissionGranted(context)
                                     }
 
                                     if (needsAllFilesAccess) {
@@ -1557,34 +1512,6 @@ fun PropertyInspectorBottomDock(
                         }
                     }
                 }
-
-                // FULL-WIDTH SAVE WIDGET & DESIGN BUTTON AT BOTTOM OF INSPECTOR
-                Button(
-                    onClick = {
-                        val latest = buildEditedComponent()
-                        onSaveDesign(latest)
-                    },
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = Color(0xFF00C853),
-                        contentColor = Color.White
-                    ),
-                    shape = RoundedCornerShape(8.dp),
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .testTag("inspector_bottom_save_button")
-                ) {
-                    Icon(
-                        imageVector = Icons.Default.Save,
-                        contentDescription = "Save Widget & Design",
-                        modifier = Modifier.size(16.dp)
-                    )
-                    Spacer(modifier = Modifier.width(6.dp))
-                    Text(
-                        text = "Save Widget & Design",
-                        fontWeight = FontWeight.ExtraBold,
-                        fontSize = 12.sp
-                    )
-                }
             }
         }
     }
@@ -1649,21 +1576,84 @@ private fun resolvePickedTargetFilePath(
     componentId: Long
 ): String {
     try {
+        if ("file".equals(uri.scheme, ignoreCase = true)) {
+            val filePath = uri.path
+            if (!filePath.isNullOrBlank()) {
+                return filePath
+            }
+        }
         val docId = android.provider.DocumentsContract.getDocumentId(uri)
         if (docId.startsWith("primary:")) {
             val rel = docId.removePrefix("primary:")
-            val candidate = java.io.File(android.os.Environment.getExternalStorageDirectory(), rel)
+            val candidate = java.io.File("/storage/emulated/0", rel)
             return candidate.absolutePath
         }
         if (docId.startsWith("raw:")) {
             return docId.removePrefix("raw:")
         }
+        if (docId.startsWith("home:")) {
+            val rel = docId.removePrefix("home:")
+            return java.io.File("/storage/emulated/0/Documents", rel).absolutePath
+        }
+        if (docId.contains(":")) {
+            val afterColon = docId.substringAfter(":")
+            val extCandidate = java.io.File("/storage/emulated/0", afterColon)
+            if (extCandidate.exists()) {
+                return extCandidate.absolutePath
+            }
+        }
     } catch (_: Exception) {
     }
+
+    try {
+        val rawPath = android.net.Uri.decode(uri.path ?: "")
+        if (rawPath.contains("/storage/emulated/0/")) {
+            return "/storage/emulated/0/" + rawPath.substringAfter("/storage/emulated/0/")
+        }
+        if (rawPath.contains("/sdcard/")) {
+            return "/storage/emulated/0/" + rawPath.substringAfter("/sdcard/")
+        }
+        if (rawPath.contains("primary:")) {
+            return "/storage/emulated/0/" + rawPath.substringAfter("primary:")
+        }
+    } catch (_: Exception) {
+    }
+
+    try {
+        context.contentResolver.query(uri, arrayOf("_data", "_display_name"), null, null, null)?.use { cursor ->
+            if (cursor.moveToFirst()) {
+                val dataIdx = cursor.getColumnIndex("_data")
+                if (dataIdx >= 0) {
+                    val dataPath = cursor.getString(dataIdx)
+                    if (!dataPath.isNullOrBlank()) {
+                        return dataPath
+                    }
+                }
+                val nameIdx = cursor.getColumnIndex("_display_name")
+                if (nameIdx >= 0) {
+                    val displayName = cursor.getString(nameIdx)
+                    if (!displayName.isNullOrBlank()) {
+                        val resolved = com.example.engine.LocalConfigStateWriter.getInstance()
+                            .resolveTargetFile(context.filesDir, displayName)
+                        if (resolved.exists()) {
+                            return resolved.absolutePath
+                        }
+                    }
+                }
+            }
+        }
+    } catch (_: Exception) {
+    }
+
     return try {
-        val targetDir = java.io.File(context.filesDir, "target_scripts").apply { mkdirs() }
         val fileName = uri.lastPathSegment?.substringAfterLast('/')?.substringAfterLast(':')
             ?.takeIf { it.isNotBlank() } ?: "script_${componentId}.py"
+        val resolvedExt = com.example.engine.LocalConfigStateWriter.getInstance()
+            .resolveTargetFile(context.filesDir, fileName)
+        if (resolvedExt.exists() && resolvedExt.absolutePath.startsWith("/storage/")) {
+            return resolvedExt.absolutePath
+        }
+        val targetDir = java.io.File(context.filesDir, "target_scripts").apply { mkdirs() }
         val destFile = java.io.File(targetDir, fileName)
         context.contentResolver.openInputStream(uri)?.use { input ->
             java.io.FileOutputStream(destFile).use { output ->
@@ -1672,6 +1662,6 @@ private fun resolvePickedTargetFilePath(
         }
         destFile.absolutePath
     } catch (_: Exception) {
-        uri.path ?: "/sdcard/script.py"
+        uri.path ?: "/storage/emulated/0/script.py"
     }
 }

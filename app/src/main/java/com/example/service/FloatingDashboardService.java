@@ -84,11 +84,15 @@ public class FloatingDashboardService extends Service {
 
         startForeground(NOTIFICATION_ID, buildForegroundNotification());
 
-        if (Settings.canDrawOverlays(this)) {
+        boolean hasOverlay = Settings.canDrawOverlays(this);
+        boolean hasStorage = LocalConfigStateWriter.hasStoragePermissionGranted(this);
+
+        if (hasOverlay && hasStorage) {
             removeSystemOverlayWindow();
             showDynamicSystemOverlayWindow();
             running = true;
         } else {
+            removeSystemOverlayWindow();
             running = false;
             stopSelf();
         }
@@ -433,9 +437,16 @@ public class FloatingDashboardService extends Service {
                 row.setGravity(Gravity.CENTER_VERTICAL);
                 row.setPadding(dpToPx(8), dpToPx(4), dpToPx(8), dpToPx(4));
 
-                final boolean[] isCheckedState = new boolean[]{
-                        "1".equals(spec.currentValue) || "true".equalsIgnoreCase(spec.currentValue)
-                };
+                boolean defaultChecked = "1".equals(spec.currentValue) || "true".equalsIgnoreCase(spec.currentValue);
+                boolean syncedChecked = LocalConfigStateWriter.getInstance().detectInitialToggleState(
+                        getFilesDir(),
+                        spec.targetFilePath,
+                        spec.offPayloadHex,
+                        spec.onPayloadHex,
+                        defaultChecked
+                );
+                spec.currentValue = syncedChecked ? "1" : "0";
+                final boolean[] isCheckedState = new boolean[]{ syncedChecked };
 
                 LinearLayout textCol = new LinearLayout(this);
                 textCol.setOrientation(LinearLayout.VERTICAL);
@@ -488,26 +499,28 @@ public class FloatingDashboardService extends Service {
                 updateVisuals.run();
 
                 toggleSwitch.setOnCheckedChangeListener((btn, isChecked) -> {
+                    DynamicOverlayRegistry.OverlayItemSpec latest = DynamicOverlayRegistry.getSpecById(spec.id, spec);
                     isCheckedState[0] = isChecked;
-                    spec.currentValue = isChecked ? "1" : "0";
+                    latest.currentValue = isChecked ? "1" : "0";
+                    spec.currentValue = latest.currentValue;
                     updateVisuals.run();
                     if (isChecked) {
-                        SoundTriggerPlayer.playSoundTrigger(this, btn, spec.soundTrigger, spec.customSoundPath);
+                        SoundTriggerPlayer.playSoundTrigger(this, btn, latest.soundTrigger, latest.customSoundPath);
                     } else {
-                        SoundTriggerPlayer.playSoundTrigger(this, btn, spec.offSoundTrigger, spec.offCustomSoundPath);
+                        SoundTriggerPlayer.playSoundTrigger(this, btn, latest.offSoundTrigger, latest.offCustomSoundPath);
                     }
-                    String payload = isChecked ? spec.onPayloadHex : spec.offPayloadHex;
+                    String payload = isChecked ? latest.onPayloadHex : latest.offPayloadHex;
                     LocalConfigStateWriter.getInstance().applyWidgetPatchAsync(
                             getFilesDir(),
-                            "widget_" + spec.id,
+                            "widget_" + latest.id,
                             "TOGGLE",
-                            spec.targetFilePath,
-                            spec.byteOffsetHex,
-                            spec.offPayloadHex,
-                            spec.onPayloadHex,
+                            latest.targetFilePath,
+                            latest.byteOffsetHex,
+                            latest.offPayloadHex,
+                            latest.onPayloadHex,
                             payload,
                             isChecked,
-                            spec.label
+                            latest.label
                     );
                 });
 
@@ -799,9 +812,16 @@ public class FloatingDashboardService extends Service {
             }
             case "BUTTON":
             default: {
-                final boolean[] isBtnOn = new boolean[]{
-                        "1".equals(spec.currentValue) || "true".equalsIgnoreCase(spec.currentValue)
-                };
+                boolean defaultBtnOn = "1".equals(spec.currentValue) || "true".equalsIgnoreCase(spec.currentValue);
+                boolean syncedBtnOn = LocalConfigStateWriter.getInstance().detectInitialToggleState(
+                        getFilesDir(),
+                        spec.targetFilePath,
+                        spec.offPayloadHex,
+                        spec.onPayloadHex,
+                        defaultBtnOn
+                );
+                spec.currentValue = syncedBtnOn ? "1" : "0";
+                final boolean[] isBtnOn = new boolean[]{ syncedBtnOn };
                 LinearLayout btnRow = new LinearLayout(this);
                 btnRow.setOrientation(LinearLayout.HORIZONTAL);
                 btnRow.setGravity(Gravity.CENTER_VERTICAL);
@@ -847,29 +867,31 @@ public class FloatingDashboardService extends Service {
                 updateBtnVisuals.run();
 
                 View.OnClickListener clickListener = v -> {
+                    DynamicOverlayRegistry.OverlayItemSpec latest = DynamicOverlayRegistry.getSpecById(spec.id, spec);
                     isBtnOn[0] = !isBtnOn[0];
-                    spec.currentValue = isBtnOn[0] ? "1" : "0";
+                    latest.currentValue = isBtnOn[0] ? "1" : "0";
+                    spec.currentValue = latest.currentValue;
                     updateBtnVisuals.run();
                     if (isBtnOn[0]) {
-                        SoundTriggerPlayer.playSoundTrigger(this, btnRow, spec.soundTrigger, spec.customSoundPath);
+                        SoundTriggerPlayer.playSoundTrigger(this, btnRow, latest.soundTrigger, latest.customSoundPath);
                     } else {
-                        SoundTriggerPlayer.playSoundTrigger(this, btnRow, spec.offSoundTrigger, spec.offCustomSoundPath);
+                        SoundTriggerPlayer.playSoundTrigger(this, btnRow, latest.offSoundTrigger, latest.offCustomSoundPath);
                     }
-                    if (spec.linkUrl != null && !spec.linkUrl.trim().isEmpty() && isBtnOn[0]) {
-                        openLinkUrl(spec.linkUrl);
+                    if (latest.linkUrl != null && !latest.linkUrl.trim().isEmpty() && isBtnOn[0]) {
+                        openLinkUrl(latest.linkUrl);
                     }
-                    String payload = isBtnOn[0] ? spec.onPayloadHex : spec.offPayloadHex;
+                    String payload = isBtnOn[0] ? latest.onPayloadHex : latest.offPayloadHex;
                     LocalConfigStateWriter.getInstance().applyWidgetPatchAsync(
                             getFilesDir(),
-                            "widget_" + spec.id,
+                            "widget_" + latest.id,
                             "BUTTON",
-                            spec.targetFilePath,
-                            spec.byteOffsetHex,
-                            spec.offPayloadHex,
-                            spec.onPayloadHex,
+                            latest.targetFilePath,
+                            latest.byteOffsetHex,
+                            latest.offPayloadHex,
+                            latest.onPayloadHex,
                             payload,
                             isBtnOn[0],
-                            spec.label
+                            latest.label
                     );
                 };
 

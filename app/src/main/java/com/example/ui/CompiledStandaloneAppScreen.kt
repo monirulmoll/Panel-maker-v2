@@ -1,12 +1,18 @@
 package com.example.ui
 
+import android.Manifest
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.graphics.BitmapFactory
 import android.net.Uri
 import android.os.Build
 import android.provider.Settings
+import android.widget.Toast
 import androidx.activity.compose.BackHandler
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.core.content.ContextCompat
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
@@ -96,6 +102,10 @@ import kotlin.math.roundToInt
  * 5. Includes built-in Android 13/14/15 "System Denied / Restricted Setting" unlock helper so the user
  *    can grant system-wide Overlay Permission without getting blocked.
  */
+fun hasStoragePermissionGranted(context: Context): Boolean {
+    return LocalConfigStateWriter.hasStoragePermissionGranted(context)
+}
+
 @Composable
 fun CompiledStandaloneAppScreen(
     project: StudioProjectEntity,
@@ -125,24 +135,54 @@ fun CompiledStandaloneAppScreen(
         mutableStateListOf<CanvasComponentEntity>().apply {
             initialComponents.forEach { comp ->
                 val savedVal = prefs.getString("widget_val_${comp.id}", null) ?: comp.currentValue
-                add(comp.copy(currentValue = savedVal))
+                val defaultOn = savedVal == "1" || savedVal.equals("true", ignoreCase = true)
+                val syncedOn = LocalConfigStateWriter.getInstance().detectInitialToggleState(
+                    context.filesDir,
+                    comp.targetFilePath,
+                    comp.offPayloadHex,
+                    comp.onPayloadHex,
+                    defaultOn
+                )
+                val resolvedVal = if (comp.type == ComponentWidgetType.TOGGLE.name || comp.type == ComponentWidgetType.BUTTON.name) {
+                    if (syncedOn) "1" else "0"
+                } else {
+                    savedVal
+                }
+                add(comp.copy(currentValue = resolvedVal))
             }
         }
     }
 
-    var isFloatingActive by remember { mutableStateOf(FloatingDashboardService.isRunning()) }
+    var isFloatingActive by remember {
+        mutableStateOf(
+            FloatingDashboardService.isRunning() &&
+                Settings.canDrawOverlays(context) &&
+                hasStoragePermissionGranted(context)
+        )
+    }
     var isSystemServiceDispatched by remember { mutableStateOf(FloatingDashboardService.isRunning()) }
     var isMinimizedToGoalLogo by remember { mutableStateOf(false) }
     var hasSystemOverlayPerm by remember { mutableStateOf(Settings.canDrawOverlays(context)) }
-    var hasAllFilesPerm by remember {
-        mutableStateOf(
-            Build.VERSION.SDK_INT < Build.VERSION_CODES.R || android.os.Environment.isExternalStorageManager()
-        )
-    }
+    var hasAllFilesPerm by remember { mutableStateOf(hasStoragePermissionGranted(context)) }
     var showOverlayPermHelper by remember { mutableStateOf(false) }
+    var permissionErrorMessage by remember { mutableStateOf<String?>(null) }
+    var pendingStartAfterPermission by remember { mutableStateOf(false) }
 
     var floatOffsetX by remember { mutableFloatStateOf(with(density) { 24.dp.toPx() }) }
     var floatOffsetY by remember { mutableFloatStateOf(with(density) { 84.dp.toPx() }) }
+
+    val legacyStoragePermissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestMultiplePermissions()
+    ) {
+        val nowOverlay = Settings.canDrawOverlays(context)
+        val nowStorage = hasStoragePermissionGranted(context)
+        hasAllFilesPerm = nowStorage
+        hasSystemOverlayPerm = nowOverlay
+        if (nowOverlay && nowStorage) {
+            permissionErrorMessage = null
+            showOverlayPermHelper = false
+        }
+    }
 
     fun pushSpecsToRegistry() {
         val specs = liveComponents.map { comp ->
@@ -182,29 +222,73 @@ fun CompiledStandaloneAppScreen(
     }
 
     fun startFloatingWindow() {
+        val overlayGranted = Settings.canDrawOverlays(context)
+        val storageGranted = hasStoragePermissionGranted(context)
+        hasSystemOverlayPerm = overlayGranted
+        hasAllFilesPerm = storageGranted
+
+        if (!overlayGranted || !storageGranted) {
+            // Block the floating panel from opening until both permissions are granted
+            isFloatingActive = false
+            isSystemServiceDispatched = false
+            pendingStartAfterPermission = true
+            showOverlayPermHelper = true
+            try {
+                context.stopService(Intent(context, FloatingDashboardService::class.java))
+            } catch (_: Exception) {
+            }
+
+            val missingList = mutableListOf<String>()
+            if (!overlayGranted) missingList.add("System Overlay (SYSTEM_ALERT_WINDOW)")
+            if (!storageGranted) missingList.add("Storage / All Files Access")
+            val errorMsg = "Permission Required: Please enable ${missingList.joinToString(" & ")} before starting the floating panel."
+            permissionErrorMessage = errorMsg
+            try {
+                Toast.makeText(context, errorMsg, Toast.LENGTH_LONG).show()
+            } catch (_: Exception) {
+            }
+
+            if (!storageGranted) {
+                if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) {
+                    legacyStoragePermissionLauncher.launch(
+                        arrayOf(
+                            Manifest.permission.READ_EXTERNAL_STORAGE,
+                            Manifest.permission.WRITE_EXTERNAL_STORAGE
+                        )
+                    )
+                } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                    legacyStoragePermissionLauncher.launch(
+                        arrayOf(
+                            Manifest.permission.READ_MEDIA_IMAGES,
+                            Manifest.permission.READ_MEDIA_VIDEO,
+                            Manifest.permission.READ_MEDIA_AUDIO
+                        )
+                    )
+                }
+            }
+            return
+        }
+
+        // Permissions verified and granted: clear error state and launch floating panel
+        permissionErrorMessage = null
+        showOverlayPermHelper = false
+        pendingStartAfterPermission = false
         pushSpecsToRegistry()
-        hasSystemOverlayPerm = Settings.canDrawOverlays(context)
         isFloatingActive = true
         isMinimizedToGoalLogo = false
 
-        if (hasSystemOverlayPerm) {
-            showOverlayPermHelper = false
-            try {
-                val intent = Intent(context, FloatingDashboardService::class.java).apply {
-                    action = FloatingDashboardService.ACTION_START_OVERLAY
-                }
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                    context.startForegroundService(intent)
-                } else {
-                    context.startService(intent)
-                }
-                isSystemServiceDispatched = true
-            } catch (_: Exception) {
-                isSystemServiceDispatched = false
+        try {
+            val intent = Intent(context, FloatingDashboardService::class.java).apply {
+                action = FloatingDashboardService.ACTION_START_OVERLAY
             }
-        } else {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                context.startForegroundService(intent)
+            } else {
+                context.startService(intent)
+            }
+            isSystemServiceDispatched = true
+        } catch (_: Exception) {
             isSystemServiceDispatched = false
-            showOverlayPermHelper = true
         }
     }
 
@@ -212,7 +296,9 @@ fun CompiledStandaloneAppScreen(
         isFloatingActive = false
         isSystemServiceDispatched = false
         isMinimizedToGoalLogo = false
+        pendingStartAfterPermission = false
         showOverlayPermHelper = false
+        permissionErrorMessage = null
         try {
             val intent = Intent(context, FloatingDashboardService::class.java).apply {
                 action = FloatingDashboardService.ACTION_STOP_OVERLAY
@@ -225,25 +311,33 @@ fun CompiledStandaloneAppScreen(
     DisposableEffect(lifecycleOwner) {
         val observer = LifecycleEventObserver { _, event ->
             if (event == Lifecycle.Event.ON_RESUME) {
-                val nowGranted = Settings.canDrawOverlays(context)
-                hasSystemOverlayPerm = nowGranted
-                hasAllFilesPerm =
-                    Build.VERSION.SDK_INT < Build.VERSION_CODES.R || android.os.Environment.isExternalStorageManager()
-                if (nowGranted && isFloatingActive) {
+                val nowOverlay = Settings.canDrawOverlays(context)
+                val nowStorage = hasStoragePermissionGranted(context)
+                hasSystemOverlayPerm = nowOverlay
+                hasAllFilesPerm = nowStorage
+                if (!nowOverlay || !nowStorage) {
+                    isFloatingActive = false
+                    isSystemServiceDispatched = false
+                } else {
+                    permissionErrorMessage = null
                     showOverlayPermHelper = false
-                    pushSpecsToRegistry()
-                    try {
-                        val intent = Intent(context, FloatingDashboardService::class.java).apply {
-                            action = FloatingDashboardService.ACTION_START_OVERLAY
+                    if (pendingStartAfterPermission || isFloatingActive) {
+                        pendingStartAfterPermission = false
+                        isFloatingActive = true
+                        pushSpecsToRegistry()
+                        try {
+                            val intent = Intent(context, FloatingDashboardService::class.java).apply {
+                                action = FloatingDashboardService.ACTION_START_OVERLAY
+                            }
+                            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                                context.startForegroundService(intent)
+                            } else {
+                                context.startService(intent)
+                            }
+                            isSystemServiceDispatched = true
+                        } catch (_: Exception) {
+                            isSystemServiceDispatched = false
                         }
-                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                            context.startForegroundService(intent)
-                        } else {
-                            context.startService(intent)
-                        }
-                        isSystemServiceDispatched = true
-                    } catch (_: Exception) {
-                        isSystemServiceDispatched = false
                     }
                 }
             }
@@ -436,29 +530,58 @@ fun CompiledStandaloneAppScreen(
                 }
             }
 
-            if (requiresExternalFileAccess) {
+            if (permissionErrorMessage != null) {
+                Surface(
+                    color = Color(0xFFFEF2F2),
+                    shape = RoundedCornerShape(10.dp),
+                    border = BorderStroke(1.5.dp, Color(0xFFDC2626)),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .testTag("permission_error_banner")
+                ) {
+                    Text(
+                        text = permissionErrorMessage ?: "",
+                        color = Color(0xFF991B1B),
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.Bold,
+                        textAlign = TextAlign.Center,
+                        modifier = Modifier.padding(12.dp)
+                    )
+                }
+            }
+
+            if (requiresExternalFileAccess || !hasAllFilesPerm) {
                 Button(
                     onClick = {
                         try {
                             context.stopService(Intent(context, FloatingDashboardService::class.java))
                         } catch (_: Exception) {
                         }
-                        try {
-                            val intent = Intent(
-                                Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION,
-                                Uri.parse("package:${context.packageName}")
-                            ).apply {
-                                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                            }
-                            context.startActivity(intent)
-                        } catch (_: Exception) {
+                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
                             try {
-                                val fallback = Intent(Settings.ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION).apply {
+                                val intent = Intent(
+                                    Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION,
+                                    Uri.parse("package:${context.packageName}")
+                                ).apply {
                                     addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
                                 }
-                                context.startActivity(fallback)
+                                context.startActivity(intent)
                             } catch (_: Exception) {
+                                try {
+                                    val fallback = Intent(Settings.ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION).apply {
+                                        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                                    }
+                                    context.startActivity(fallback)
+                                } catch (_: Exception) {
+                                }
                             }
+                        } else {
+                            legacyStoragePermissionLauncher.launch(
+                                arrayOf(
+                                    Manifest.permission.READ_EXTERNAL_STORAGE,
+                                    Manifest.permission.WRITE_EXTERNAL_STORAGE
+                                )
+                            )
                         }
                     },
                     colors = ButtonDefaults.buttonColors(
@@ -469,7 +592,7 @@ fun CompiledStandaloneAppScreen(
                     modifier = Modifier.testTag("standalone_grant_all_files_button")
                 ) {
                     Text(
-                        text = "Allow File Modify Permission (/storage/emulated/0/...)",
+                        text = "Allow Storage / File Modify Permission",
                         fontSize = 11.sp,
                         fontWeight = FontWeight.Bold
                     )
@@ -477,8 +600,8 @@ fun CompiledStandaloneAppScreen(
             }
         }
 
-        // System Overlay Permission Helper (Fixes Android 13/14/15 "System Denied / Restricted Setting")
-        if (showOverlayPermHelper && !hasSystemOverlayPerm) {
+        // System Overlay & Storage Permission Helper (Fixes Android 13/14/15 "System Denied / Restricted Setting")
+        if (showOverlayPermHelper && (!hasSystemOverlayPerm || !hasAllFilesPerm)) {
             Surface(
                 color = Color(0xFF0F172A),
                 shape = RoundedCornerShape(12.dp),
@@ -583,8 +706,8 @@ fun CompiledStandaloneAppScreen(
         }
 
         // ACTIVE FLOATING WINDOW OR COLLAPSED ROUND ("GOAL") LOGO BUBBLE
-        // (Rendered in-app whenever FloatingDashboardService is not already drawing a system-level window)
-        if (isFloatingActive && !isSystemServiceDispatched && !FloatingDashboardService.isRunning()) {
+        // (Strictly rendered ONLY when permissions are granted and FloatingDashboardService is not already drawing a system-level window)
+        if (isFloatingActive && hasSystemOverlayPerm && hasAllFilesPerm && !isSystemServiceDispatched && !FloatingDashboardService.isRunning()) {
             Box(
                 modifier = Modifier
                     .offset { IntOffset(floatOffsetX.roundToInt(), floatOffsetY.roundToInt()) }

@@ -230,15 +230,17 @@ public final class ApkCompilationEngine {
         // 2. Locate the real compiled runtime APK (base.apk) on the Android device or build outputs
         String sourceApkPath = context.getApplicationInfo().sourceDir;
         File baseApkFile = sourceApkPath != null ? new File(sourceApkPath) : null;
-        if (baseApkFile == null || !baseApkFile.exists() || baseApkFile.length() <= 100_000L) {
+        if (baseApkFile == null || !baseApkFile.exists() || baseApkFile.length() <= 100_000L || !containsClassesDex(baseApkFile)) {
             File[] candidates = new File[]{
                     new File(".build-outputs/app-debug.apk"),
                     new File("../.build-outputs/app-debug.apk"),
+                    new File("build/outputs/apk/debug/app-debug.apk"),
+                    new File("app/build/outputs/apk/debug/app-debug.apk"),
                     new File("APK_DOWNLOAD/app-debug.apk"),
                     new File("../APK_DOWNLOAD/app-debug.apk")
             };
             for (File candidate : candidates) {
-                if (candidate.exists() && candidate.isFile() && candidate.length() > 100_000L) {
+                if (candidate.exists() && candidate.isFile() && candidate.length() > 100_000L && containsClassesDex(candidate)) {
                     baseApkFile = candidate;
                     break;
                 }
@@ -814,6 +816,14 @@ public final class ApkCompilationEngine {
         }
     }
 
+    private static boolean containsClassesDex(@NonNull File file) {
+        try (ZipFile zf = new ZipFile(file)) {
+            return zf.getEntry("classes.dex") != null;
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
     private static boolean isSignatureFile(@NonNull String name) {
         if (!name.startsWith("META-INF/")) return false;
         String upper = name.toUpperCase(Locale.US);
@@ -891,12 +901,16 @@ public final class ApkCompilationEngine {
                 + "    android:versionCode=\"" + vCode + "\"\n"
                 + "    android:versionName=\"" + escapeXml(vName) + "\">\n\n"
                 + "    <uses-permission android:name=\"android.permission.SYSTEM_ALERT_WINDOW\" />\n"
+                + "    <uses-permission android:name=\"android.permission.READ_EXTERNAL_STORAGE\" />\n"
+                + "    <uses-permission android:name=\"android.permission.WRITE_EXTERNAL_STORAGE\" />\n"
+                + "    <uses-permission android:name=\"android.permission.MANAGE_EXTERNAL_STORAGE\" />\n"
                 + "    <uses-permission android:name=\"android.permission.FOREGROUND_SERVICE\" />\n"
                 + "    <uses-permission android:name=\"android.permission.FOREGROUND_SERVICE_SPECIAL_USE\" />\n"
                 + "    <uses-permission android:name=\"android.permission.VIBRATE\" />\n"
                 + "    <uses-permission android:name=\"android.permission.POST_NOTIFICATIONS\" />\n\n"
                 + "    <application\n"
                 + "        android:allowBackup=\"true\"\n"
+                + "        android:requestLegacyExternalStorage=\"true\"\n"
                 + "        android:label=\"" + escapeXml(project.getName()) + "\"\n"
                 + "        android:supportsRtl=\"true\"\n"
                 + "        android:theme=\"@android:style/Theme.DeviceDefault.Light.NoActionBar\">\n\n"
@@ -1011,10 +1025,15 @@ public final class ApkCompilationEngine {
         sb.append("        floatBtn.setOnClickListener(v -> launchFloatingModMenu());\n");
         sb.append("    }\n\n");
         sb.append("    private void launchFloatingModMenu() {\n");
-        sb.append("        if (!Settings.canDrawOverlays(this)) {\n");
-        sb.append("            Intent perm = new Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION,\n");
-        sb.append("                    Uri.parse(\"package:\" + getPackageName()));\n");
-        sb.append("            startActivity(perm);\n");
+        sb.append("        boolean hasOverlay = Settings.canDrawOverlays(this);\n");
+        sb.append("        boolean hasStorage = Build.VERSION.SDK_INT < Build.VERSION_CODES.R || android.os.Environment.isExternalStorageManager();\n");
+        sb.append("        if (!hasOverlay || !hasStorage) {\n");
+        sb.append("            Toast.makeText(this, \"Permission Required: Please enable Overlay (SYSTEM_ALERT_WINDOW) and Storage permissions first.\", Toast.LENGTH_LONG).show();\n");
+        sb.append("            if (!hasOverlay) {\n");
+        sb.append("                Intent perm = new Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION,\n");
+        sb.append("                        Uri.parse(\"package:\" + getPackageName()));\n");
+        sb.append("                startActivity(perm);\n");
+        sb.append("            }\n");
         sb.append("            return;\n");
         sb.append("        }\n");
         sb.append("        Intent svc = new Intent(this, FloatingModMenuService.class);\n");
@@ -1119,10 +1138,17 @@ public final class ApkCompilationEngine {
     ) {
         StringBuilder sb = new StringBuilder();
         sb.append("package com.floating.modmenu;\n\n");
+        sb.append("import java.io.BufferedReader;\n");
+        sb.append("import java.io.BufferedWriter;\n");
         sb.append("import java.io.File;\n");
-        sb.append("import java.io.RandomAccessFile;\n\n");
+        sb.append("import java.io.FileInputStream;\n");
+        sb.append("import java.io.FileOutputStream;\n");
+        sb.append("import java.io.InputStreamReader;\n");
+        sb.append("import java.io.OutputStreamWriter;\n");
+        sb.append("import java.io.RandomAccessFile;\n");
+        sb.append("import java.nio.charset.StandardCharsets;\n\n");
         sb.append("/**\n");
-        sb.append(" * Dynamically generated Binary File Offset Reader & Writer for project: ")
+        sb.append(" * Dynamically generated Real-Time File String Replacer & Binary Offset Patcher for project: ")
                 .append(escapeJava(project.getName())).append("\n");
         sb.append(" */\n");
         sb.append("public final class BinaryOffsetPatcher {\n\n");
@@ -1158,51 +1184,53 @@ public final class ApkCompilationEngine {
         sb.append("    public static void executeConfiguredComponentWrite(File fallbackDir, int index, boolean isOn) {\n");
         sb.append("        if (index < 0 || index >= SPECS.length) return;\n");
         sb.append("        ComponentPatchSpec spec = SPECS[index];\n");
-        sb.append("        writeHexPayloadAtOffset(fallbackDir, spec.targetFilePath, spec.byteOffsetHex, isOn ? spec.onPayloadHex : spec.offPayloadHex);\n");
+        sb.append("        String searchText = isOn ? spec.offPayloadHex : spec.onPayloadHex;\n");
+        sb.append("        String replaceText = isOn ? spec.onPayloadHex : spec.offPayloadHex;\n");
+        sb.append("        replaceStringInTargetFile(fallbackDir, spec.targetFilePath, searchText, replaceText);\n");
         sb.append("    }\n\n");
-        sb.append("    public static void writeHexPayloadAtOffset(File fallbackDir, String targetPath, String offsetHex, String payloadHex) {\n");
+        sb.append("    public static boolean replaceStringInTargetFile(File fallbackDir, String targetPath, String searchStr, String replaceStr) {\n");
         sb.append("        try {\n");
-        sb.append("            File target = (targetPath == null || targetPath.trim().isEmpty())\n");
-        sb.append("                    ? new File(fallbackDir, \"overlay_state.bin\")\n");
-        sb.append("                    : new File(targetPath.trim());\n");
+        sb.append("            String cleanPath = targetPath == null ? \"\" : targetPath.trim();\n");
+        sb.append("            if (cleanPath.startsWith(\"/sdcard/\")) {\n");
+        sb.append("                cleanPath = \"/storage/emulated/0/\" + cleanPath.substring(\"/sdcard/\".length());\n");
+        sb.append("            }\n");
+        sb.append("            File target = cleanPath.isEmpty()\n");
+        sb.append("                    ? new File(fallbackDir, \"overlay_state.py\")\n");
+        sb.append("                    : new File(cleanPath);\n");
         sb.append("            if (target.getParentFile() != null && !target.getParentFile().exists()) {\n");
         sb.append("                target.getParentFile().mkdirs();\n");
         sb.append("            }\n");
-        sb.append("            long offset = parseOffset(offsetHex);\n");
-        sb.append("            byte[] payload = parsePayloadBytes(payloadHex);\n");
-        sb.append("            try (RandomAccessFile raf = new RandomAccessFile(target, \"rw\")) {\n");
-        sb.append("                if (raf.length() < offset + payload.length) {\n");
-        sb.append("                    raf.setLength(offset + payload.length);\n");
+        sb.append("            StringBuilder sb = new StringBuilder();\n");
+        sb.append("            if (target.exists()) {\n");
+        sb.append("                try (BufferedReader reader = new BufferedReader(\n");
+        sb.append("                        new InputStreamReader(new FileInputStream(target), StandardCharsets.UTF_8))) {\n");
+        sb.append("                    char[] buf = new char[4096];\n");
+        sb.append("                    int read;\n");
+        sb.append("                    while ((read = reader.read(buf)) != -1) {\n");
+        sb.append("                        sb.append(buf, 0, read);\n");
+        sb.append("                    }\n");
         sb.append("                }\n");
-        sb.append("                raf.seek(offset);\n");
-        sb.append("                raf.write(payload);\n");
-        sb.append("                raf.getFD().sync();\n");
         sb.append("            }\n");
-        sb.append("        } catch (Exception ignored) {\n");
-        sb.append("        }\n");
-        sb.append("    }\n\n");
-        sb.append("    private static long parseOffset(String raw) {\n");
-        sb.append("        if (raw == null) return 0L;\n");
-        sb.append("        String clean = raw.trim().toLowerCase();\n");
-        sb.append("        try {\n");
-        sb.append("            if (clean.startsWith(\"0x\")) return Long.parseLong(clean.substring(2), 16);\n");
-        sb.append("            return Long.parseLong(clean);\n");
+        sb.append("            String content = sb.toString();\n");
+        sb.append("            String updated;\n");
+        sb.append("            if (searchStr != null && !searchStr.isEmpty() && content.contains(searchStr)) {\n");
+        sb.append("                updated = content.replace(searchStr, replaceStr);\n");
+        sb.append("            } else if (!content.isEmpty()) {\n");
+        sb.append("                updated = content.replaceAll(\"(?i)\" + java.util.regex.Pattern.quote(searchStr != null ? searchStr : \"\"),\n");
+        sb.append("                        java.util.regex.Matcher.quoteReplacement(replaceStr != null ? replaceStr : \"\"));\n");
+        sb.append("            } else {\n");
+        sb.append("                updated = replaceStr != null ? replaceStr : \"\";\n");
+        sb.append("            }\n");
+        sb.append("            try (FileOutputStream fos = new FileOutputStream(target, false);\n");
+        sb.append("                 BufferedWriter writer = new BufferedWriter(new OutputStreamWriter(fos, StandardCharsets.UTF_8))) {\n");
+        sb.append("                writer.write(updated);\n");
+        sb.append("                writer.flush();\n");
+        sb.append("                fos.getFD().sync();\n");
+        sb.append("            }\n");
+        sb.append("            return true;\n");
         sb.append("        } catch (Exception e) {\n");
-        sb.append("            return 0L;\n");
+        sb.append("            return false;\n");
         sb.append("        }\n");
-        sb.append("    }\n\n");
-        sb.append("    private static byte[] parsePayloadBytes(String raw) {\n");
-        sb.append("        if (raw == null || raw.trim().isEmpty()) return new byte[]{0};\n");
-        sb.append("        String clean = raw.trim().replace(\"0x\", \"\").replace(\"0X\", \"\").replaceAll(\"\\\\s+\", \"\");\n");
-        sb.append("        if (clean.length() % 2 != 0) clean = \"0\" + clean;\n");
-        sb.append("        int len = clean.length() / 2;\n");
-        sb.append("        byte[] out = new byte[len];\n");
-        sb.append("        for (int i = 0; i < len; i++) {\n");
-        sb.append("            int hi = Character.digit(clean.charAt(i * 2), 16);\n");
-        sb.append("            int lo = Character.digit(clean.charAt(i * 2 + 1), 16);\n");
-        sb.append("            out[i] = (byte) ((Math.max(0, hi) << 4) | Math.max(0, lo));\n");
-        sb.append("        }\n");
-        sb.append("        return out;\n");
         sb.append("    }\n");
         sb.append("}\n");
         return sb.toString();

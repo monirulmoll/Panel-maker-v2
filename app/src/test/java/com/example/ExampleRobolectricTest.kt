@@ -179,6 +179,59 @@ class ExampleRobolectricTest {
         val canvasView = com.example.blueprint.EmptyCanvasWorkspaceView(context)
         canvasView.bindWorkspaceState(project, components, 1L)
         val inspectorView = com.example.blueprint.BottomPropertyInspectorView(context)
+        var lastAutoSavedComponent: CanvasComponentEntity? = null
+        inspectorView.setOnInspectorPropertyChangeListener(object : com.example.blueprint.BottomPropertyInspectorView.OnInspectorPropertyChangeListener {
+            override fun onUpdateComponent(updatedComponent: CanvasComponentEntity) {
+                lastAutoSavedComponent = updatedComponent
+            }
+            override fun onToggleAutoFixSize() {}
+            override fun onDuplicateComponent(component: CanvasComponentEntity) {}
+            override fun onDeleteComponent(component: CanvasComponentEntity) {}
+            override fun onTestTriggerWrite(component: CanvasComponentEntity) {}
+            override fun onCloseInspector() {}
+        })
         inspectorView.bindComponent(components[0])
+
+        // Verify real-time auto-save on text field change without any manual Save button click
+        val etOnPayload = inspectorView.findViewById<android.widget.EditText>(R.id.et_on_payload_hex)
+        val etOffPayload = inspectorView.findViewById<android.widget.EditText>(R.id.et_off_payload_hex)
+        etOffPayload.setText("Off")
+        etOnPayload.setText("On")
+        assertEquals("Off", lastAutoSavedComponent?.offPayloadHex)
+        assertEquals("On", lastAutoSavedComponent?.onPayloadHex)
+
+        // Verify Python file text replacement (Off -> On and On -> Off)
+        val pyFile = File(context.filesDir, "py.py")
+        pyFile.writeText("status = Off\n")
+        val writer = LocalConfigStateWriter.getInstance()
+        val okOn = writer.applyWidgetPatchSync(
+            context.filesDir,
+            "widget_1",
+            "TOGGLE",
+            pyFile.absolutePath,
+            "0x04",
+            "Off",
+            "On",
+            "On",
+            true,
+            "Toggle #1"
+        )
+        assertTrue(okOn)
+        assertTrue(pyFile.readText().contains("On"))
+
+        val okOff = writer.applyWidgetPatchSync(
+            context.filesDir,
+            "widget_1",
+            "TOGGLE",
+            pyFile.absolutePath,
+            "0x04",
+            "Off",
+            "On",
+            "Off",
+            false,
+            "Toggle #1"
+        )
+        assertTrue(okOff)
+        assertTrue(pyFile.readText().contains("Off"))
     }
 }

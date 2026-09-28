@@ -269,10 +269,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             _uiState.update { state ->
                 state.copy(
                     activeProject = updated,
-                    showEditFloatingPanelDialog = false,
-                    statusToast = "Updated Floating Panel Name & Goal Logo."
+                    customEditedKotlinFiles = emptyMap(),
+                    statusToast = "Auto-saved Floating Panel Name & Goal Logo."
                 )
             }
+            syncOverlayRegistryInBackground(updated)
         }
     }
 
@@ -557,9 +558,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     selectedComponentId = newId,
                     customEditedKotlinFiles = emptyMap(),
                     statusToast = if (project.autoFixSize)
-                        "Added '$defaultLabel' (Auto-fitted). Edit below & tap Save."
+                        "Added '$defaultLabel' (Auto-fitted & auto-saved)."
                     else
-                        "Added '$defaultLabel' — Customize below & tap Save."
+                        "Added '$defaultLabel' — Customize below (auto-saves in real time)."
                 )
             }
         }
@@ -676,16 +677,59 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    private suspend fun syncOverlayRegistryInBackground(projectOverride: StudioProjectEntity? = null) {
+        val project = projectOverride ?: _uiState.value.activeProject ?: return
+        val list = studioDao.getComponentsForProjectSync(project.id)
+        val specs = list.map { comp ->
+            DynamicOverlayRegistry.OverlayItemSpec().apply {
+                id = comp.id
+                type = comp.type
+                label = comp.label
+                posXDp = comp.posXDp
+                posYDp = comp.posYDp
+                widthDp = comp.widthDp
+                heightDp = comp.heightDp
+                bgColorHex = comp.bgColorHex
+                textColorHex = comp.textColorHex
+                customImagePath = comp.customImagePath
+                soundTrigger = comp.soundTrigger
+                customSoundPath = comp.customSoundPath
+                offSoundTrigger = comp.offSoundTrigger
+                offCustomSoundPath = comp.offCustomSoundPath
+                targetFilePath = comp.targetFilePath
+                byteOffsetHex = comp.byteOffsetHex
+                onPayloadHex = comp.onPayloadHex
+                offPayloadHex = comp.offPayloadHex
+                sliderMax = comp.sliderMax
+                currentValue = comp.currentValue
+                linkUrl = comp.linkUrl
+            }
+        }
+        DynamicOverlayRegistry.updateActiveOverlay(
+            project.overlayTitle,
+            project.floatingLogoPath,
+            project.canvasWidthDp,
+            project.canvasHeightDp,
+            project.canvasBgColorHex,
+            project.autoFixSize,
+            specs
+        )
+    }
+
     fun updateComponent(updated: CanvasComponentEntity) {
         viewModelScope.launch {
             studioDao.updateComponent(updated)
-            _uiState.value.activeProject?.let { proj ->
-                val updatedProj = proj.copy(updatedAt = System.currentTimeMillis())
+            val currentProj = _uiState.value.activeProject
+            val updatedProj = currentProj?.copy(updatedAt = System.currentTimeMillis())
+            if (updatedProj != null) {
                 studioDao.updateProject(updatedProj)
             }
-            // Clear any cached code snapshot so visual design changes are always authoritative on Build
-            if (_uiState.value.customEditedKotlinFiles.isNotEmpty()) {
-                _uiState.update { it.copy(customEditedKotlinFiles = emptyMap()) }
+            syncOverlayRegistryInBackground(updatedProj)
+            _uiState.update { state ->
+                state.copy(
+                    activeProject = updatedProj ?: state.activeProject,
+                    customEditedKotlinFiles = emptyMap()
+                )
             }
         }
     }
@@ -1003,6 +1047,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    fun hasStoragePermission(): Boolean {
+        return LocalConfigStateWriter.hasStoragePermissionGranted(appContext)
+    }
+
     fun refreshOverlayPermission() {
         _uiState.update {
             it.copy(
@@ -1014,6 +1062,28 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun launchSystemFloatingOverlay() {
         val project = _uiState.value.activeProject ?: return
+        val hasOverlay = Settings.canDrawOverlays(appContext)
+        val hasStorage = hasStoragePermission()
+
+        if (!hasOverlay || !hasStorage) {
+            try {
+                appContext.stopService(Intent(appContext, FloatingDashboardService::class.java))
+            } catch (_: Exception) {
+            }
+            val missing = mutableListOf<String>()
+            if (!hasOverlay) missing.add("Overlay Permission (SYSTEM_ALERT_WINDOW)")
+            if (!hasStorage) missing.add("Storage / All Files Access Permission")
+            _uiState.update {
+                it.copy(
+                    isSystemOverlayRunning = false,
+                    isLivePreviewMode = false,
+                    hasOverlayPermission = hasOverlay,
+                    statusToast = "⚠️ Permission Required: Please grant ${missing.joinToString(" & ")} before opening the floating panel."
+                )
+            }
+            return
+        }
+
         val components = activeComponents.value
         val specs = components.map { comp ->
             DynamicOverlayRegistry.OverlayItemSpec().apply {
@@ -1051,32 +1121,26 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             specs
         )
 
-        if (Settings.canDrawOverlays(appContext)) {
-            try {
-                val intent = Intent(appContext, FloatingDashboardService::class.java).apply {
-                    action = FloatingDashboardService.ACTION_START_OVERLAY
-                }
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                    appContext.startForegroundService(intent)
-                } else {
-                    appContext.startService(intent)
-                }
-                _uiState.update {
-                    it.copy(
-                        isSystemOverlayRunning = true,
-                        statusToast = "System Floating Overlay launched with ${specs.size} custom component(s)."
-                    )
-                }
-            } catch (e: Exception) {
-                _uiState.update {
-                    it.copy(statusToast = "Switched to In-App Interactive Preview Mode.")
-                }
+        try {
+            val intent = Intent(appContext, FloatingDashboardService::class.java).apply {
+                action = FloatingDashboardService.ACTION_START_OVERLAY
             }
-        } else {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                appContext.startForegroundService(intent)
+            } else {
+                appContext.startService(intent)
+            }
             _uiState.update {
                 it.copy(
-                    isLivePreviewMode = false,
-                    statusToast = "Please grant Overlay Permission to float window over other Android apps."
+                    isSystemOverlayRunning = true,
+                    statusToast = "System Floating Overlay launched with ${specs.size} custom component(s)."
+                )
+            }
+        } catch (e: Exception) {
+            _uiState.update {
+                it.copy(
+                    isSystemOverlayRunning = false,
+                    statusToast = "Could not launch floating overlay: ${e.message}"
                 )
             }
         }

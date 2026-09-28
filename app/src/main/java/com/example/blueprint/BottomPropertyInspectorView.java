@@ -45,6 +45,7 @@ public class BottomPropertyInspectorView extends LinearLayout {
 
     private CanvasComponentEntity boundComponent;
     private OnInspectorPropertyChangeListener propertyListener;
+    private boolean isBinding = false;
 
     public BottomPropertyInspectorView(@NonNull Context context) {
         this(context, null);
@@ -72,6 +73,31 @@ public class BottomPropertyInspectorView extends LinearLayout {
         ImageButton btnSaveClose = findViewById(R.id.btn_inspector_save_close);
         Button chipAutoFix = findViewById(R.id.chip_auto_fix);
         Button chipInject = findViewById(R.id.chip_inject);
+
+        android.text.TextWatcher autoSaveWatcher = new android.text.TextWatcher() {
+            @Override
+            public void beforeTextChanged(CharSequence s, int start, int count, int after) {}
+
+            @Override
+            public void onTextChanged(CharSequence s, int start, int before, int count) {}
+
+            @Override
+            public void afterTextChanged(android.text.Editable s) {
+                if (!isBinding) {
+                    commitCurrentFieldValues();
+                }
+            }
+        };
+
+        etLabel.addTextChangedListener(autoSaveWatcher);
+        etWidth.addTextChangedListener(autoSaveWatcher);
+        etHeight.addTextChangedListener(autoSaveWatcher);
+        etTargetFilePath.addTextChangedListener(autoSaveWatcher);
+        etByteOffsetHex.addTextChangedListener(autoSaveWatcher);
+        etOnPayloadHex.addTextChangedListener(autoSaveWatcher);
+        etOffPayloadHex.addTextChangedListener(autoSaveWatcher);
+        etBgColorHex.addTextChangedListener(autoSaveWatcher);
+        etTextColorHex.addTextChangedListener(autoSaveWatcher);
 
         btnStateToggle.setOnClickListener(v -> {
             if (boundComponent != null && propertyListener != null) {
@@ -112,20 +138,25 @@ public class BottomPropertyInspectorView extends LinearLayout {
     }
 
     public void bindComponent(@NonNull CanvasComponentEntity component) {
-        this.boundComponent = component;
-        tvWidgetId.setText("widget" + component.getId() + " (" + component.getLabel() + ")");
-        boolean isOn = "1".equals(component.getCurrentValue()) || "true".equalsIgnoreCase(component.getCurrentValue());
-        btnStateToggle.setText(isOn ? "ON" : "OFF");
+        this.isBinding = true;
+        try {
+            this.boundComponent = component;
+            tvWidgetId.setText("widget" + component.getId() + " (" + component.getLabel() + ")");
+            boolean isOn = "1".equals(component.getCurrentValue()) || "true".equalsIgnoreCase(component.getCurrentValue());
+            btnStateToggle.setText(isOn ? "ON" : "OFF");
 
-        etLabel.setText(component.getLabel());
-        etWidth.setText(String.valueOf(component.getWidthDp()));
-        etHeight.setText(String.valueOf(component.getHeightDp()));
-        etTargetFilePath.setText(component.getTargetFilePath());
-        etByteOffsetHex.setText(component.getByteOffsetHex());
-        etOnPayloadHex.setText(component.getOnPayloadHex());
-        etOffPayloadHex.setText(component.getOffPayloadHex());
-        etBgColorHex.setText(component.getBgColorHex());
-        etTextColorHex.setText(component.getTextColorHex());
+            etLabel.setText(component.getLabel());
+            etWidth.setText(String.valueOf(component.getWidthDp()));
+            etHeight.setText(String.valueOf(component.getHeightDp()));
+            etTargetFilePath.setText(component.getTargetFilePath());
+            etByteOffsetHex.setText(component.getByteOffsetHex());
+            etOnPayloadHex.setText(component.getOnPayloadHex());
+            etOffPayloadHex.setText(component.getOffPayloadHex());
+            etBgColorHex.setText(component.getBgColorHex());
+            etTextColorHex.setText(component.getTextColorHex());
+        } finally {
+            this.isBinding = false;
+        }
     }
 
     public void commitCurrentFieldValues() {

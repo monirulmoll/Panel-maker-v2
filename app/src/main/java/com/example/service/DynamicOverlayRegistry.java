@@ -91,10 +91,47 @@ public class DynamicOverlayRegistry {
         activeCanvasHeightDp = Math.max(160, heightDp);
         activeCanvasBgHex = bgHex != null && !bgHex.trim().isEmpty() ? bgHex : "#FFFFFF";
         activeAutoFixSize = autoFixSize;
+        if (items != null) {
+            for (OverlayItemSpec incoming : items) {
+                for (OverlayItemSpec existing : activeItems) {
+                    if (existing.id == incoming.id) {
+                        existing.type = incoming.type;
+                        existing.label = incoming.label;
+                        existing.posXDp = incoming.posXDp;
+                        existing.posYDp = incoming.posYDp;
+                        existing.widthDp = incoming.widthDp;
+                        existing.heightDp = incoming.heightDp;
+                        existing.bgColorHex = incoming.bgColorHex;
+                        existing.textColorHex = incoming.textColorHex;
+                        existing.customImagePath = incoming.customImagePath;
+                        existing.soundTrigger = incoming.soundTrigger;
+                        existing.customSoundPath = incoming.customSoundPath;
+                        existing.offSoundTrigger = incoming.offSoundTrigger;
+                        existing.offCustomSoundPath = incoming.offCustomSoundPath;
+                        existing.targetFilePath = incoming.targetFilePath;
+                        existing.byteOffsetHex = incoming.byteOffsetHex;
+                        existing.onPayloadHex = incoming.onPayloadHex;
+                        existing.offPayloadHex = incoming.offPayloadHex;
+                        existing.sliderMax = incoming.sliderMax;
+                        existing.currentValue = incoming.currentValue;
+                        existing.linkUrl = incoming.linkUrl;
+                    }
+                }
+            }
+        }
         activeItems.clear();
         if (items != null) {
             activeItems.addAll(items);
         }
+    }
+
+    public static synchronized OverlayItemSpec getSpecById(long id, OverlayItemSpec fallback) {
+        for (OverlayItemSpec item : activeItems) {
+            if (item.id == id) {
+                return item;
+            }
+        }
+        return fallback;
     }
 
     public static synchronized String getActiveProjectName() {

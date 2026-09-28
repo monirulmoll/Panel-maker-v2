@@ -307,6 +307,7 @@ fun StudioCanvasBuilderScreen(
             if (uri != null) {
                 onImportFloatingLogoUri(uri) { savedPath ->
                     editedFloatingLogoPath = savedPath
+                    onSaveFloatingPanelConfig(editedPanelTitle, savedPath)
                 }
             }
         }
@@ -408,7 +409,10 @@ fun StudioCanvasBuilderScreen(
 
                             if (editedFloatingLogoPath.isNotBlank()) {
                                 TextButton(
-                                    onClick = { editedFloatingLogoPath = "" },
+                                    onClick = {
+                                        editedFloatingLogoPath = ""
+                                        onSaveFloatingPanelConfig(editedPanelTitle, "")
+                                    },
                                     modifier = Modifier.testTag("remove_floating_goal_logo_button")
                                 ) {
                                     Text(
@@ -423,7 +427,10 @@ fun StudioCanvasBuilderScreen(
 
                     OutlinedTextField(
                         value = editedPanelTitle,
-                        onValueChange = { editedPanelTitle = it },
+                        onValueChange = {
+                            editedPanelTitle = it
+                            onSaveFloatingPanelConfig(it, editedFloatingLogoPath)
+                        },
                         label = { Text("Floating Panel Name (Window Title)") },
                         placeholder = { Text("Enter floating window name...") },
                         singleLine = true,
@@ -434,20 +441,17 @@ fun StudioCanvasBuilderScreen(
                 }
             },
             confirmButton = {
-                Button(
+                TextButton(
                     onClick = {
                         onSaveFloatingPanelConfig(editedPanelTitle, editedFloatingLogoPath)
+                        onDismissEditFloatingPanel()
                     },
-                    modifier = Modifier.testTag("save_floating_panel_config_button")
+                    modifier = Modifier.testTag("close_floating_panel_config_button")
                 ) {
-                    Text("Save Floating Panel", fontWeight = FontWeight.Bold)
+                    Text("Close", fontWeight = FontWeight.Bold)
                 }
             },
-            dismissButton = {
-                TextButton(onClick = onDismissEditFloatingPanel) {
-                    Text("Cancel")
-                }
-            }
+            dismissButton = {}
         )
     }
 
@@ -669,31 +673,6 @@ fun StudioCanvasBuilderScreen(
                     }
                 },
                 actions = {
-                    Button(
-                        onClick = { onSaveProjectDesign(selectedComponent) },
-                        shape = RoundedCornerShape(8.dp),
-                        colors = ButtonDefaults.buttonColors(
-                            containerColor = Color(0xFF16A34A),
-                            contentColor = Color.White
-                        ),
-                        contentPadding = PaddingValues(horizontal = 9.dp, vertical = 6.dp),
-                        modifier = Modifier
-                            .padding(end = 5.dp)
-                            .testTag("save_project_design_button")
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.Save,
-                            contentDescription = "Save Design",
-                            modifier = Modifier.size(14.dp)
-                        )
-                        Spacer(modifier = Modifier.width(4.dp))
-                        Text(
-                            text = "Save",
-                            fontSize = 11.sp,
-                            fontWeight = FontWeight.Bold
-                        )
-                    }
-
                     Button(
                         onClick = onOpenEditCode,
                         shape = RoundedCornerShape(8.dp),

@@ -1,12 +1,25 @@
 package com.example.engine;
 
+import android.Manifest;
+import android.app.AppOpsManager;
+import android.content.Context;
+import android.content.pm.PackageManager;
+import android.os.Build;
+import android.os.Environment;
 import android.os.Handler;
 import android.os.Looper;
+import android.os.Process;
 
+import androidx.core.content.ContextCompat;
+
+import java.io.BufferedReader;
+import java.io.BufferedWriter;
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.io.IOException;
+import java.io.InputStreamReader;
+import java.io.OutputStreamWriter;
 import java.io.RandomAccessFile;
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
@@ -74,6 +87,91 @@ public class LocalConfigStateWriter {
             }
         }
         return instance;
+    }
+
+    /**
+     * Unified check for Android storage permission across Android 6–15, OEM/MIUI/Samsung AppOps,
+     * All Files Access (MANAGE_EXTERNAL_STORAGE), runtime READ/WRITE_EXTERNAL_STORAGE,
+     * and direct filesystem read/write access on /storage/emulated/0.
+     */
+    public static boolean hasStoragePermissionGranted(Context context) {
+        if (context == null) return false;
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R && Environment.isExternalStorageManager()) {
+                return true;
+            }
+        } catch (Throwable ignored) {
+        }
+
+        // Check AppOpsManager for manage_external_storage or legacy_storage or write_external_storage
+        try {
+            AppOpsManager appOps = (AppOpsManager) context.getSystemService(Context.APP_OPS_SERVICE);
+            if (appOps != null) {
+                String pkg = context.getPackageName();
+                int uid = Process.myUid();
+                String[] opsToCheck = new String[]{
+                        "android:manage_external_storage",
+                        "android:write_external_storage",
+                        "android:read_external_storage"
+                };
+                for (String op : opsToCheck) {
+                    try {
+                        int mode = Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q
+                                ? appOps.unsafeCheckOpNoThrow(op, uid, pkg)
+                                : appOps.checkOpNoThrow(op, uid, pkg);
+                        if (mode == AppOpsManager.MODE_ALLOWED) {
+                            return true;
+                        }
+                    } catch (Throwable ignored) {
+                    }
+                }
+            }
+        } catch (Throwable ignored) {
+        }
+
+        // Standard runtime permission checks (enabled via App Info -> Permissions -> Storage / Files & Media)
+        try {
+            boolean hasWrite = ContextCompat.checkSelfPermission(context, Manifest.permission.WRITE_EXTERNAL_STORAGE)
+                    == PackageManager.PERMISSION_GRANTED;
+            boolean hasRead = ContextCompat.checkSelfPermission(context, Manifest.permission.READ_EXTERNAL_STORAGE)
+                    == PackageManager.PERMISSION_GRANTED;
+            if (hasWrite || hasRead) {
+                return true;
+            }
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                boolean hasMediaImages = ContextCompat.checkSelfPermission(context, Manifest.permission.READ_MEDIA_IMAGES)
+                        == PackageManager.PERMISSION_GRANTED;
+                boolean hasMediaVideo = ContextCompat.checkSelfPermission(context, Manifest.permission.READ_MEDIA_VIDEO)
+                        == PackageManager.PERMISSION_GRANTED;
+                boolean hasMediaAudio = ContextCompat.checkSelfPermission(context, Manifest.permission.READ_MEDIA_AUDIO)
+                        == PackageManager.PERMISSION_GRANTED;
+                if (hasMediaImages || hasMediaVideo || hasMediaAudio) {
+                    return true;
+                }
+            }
+        } catch (Throwable ignored) {
+        }
+
+        // Direct filesystem check on /storage/emulated/0
+        try {
+            File extRoot = Environment.getExternalStorageDirectory();
+            if (extRoot != null && extRoot.exists() && (extRoot.canWrite() || extRoot.canRead())) {
+                File[] list = extRoot.listFiles();
+                if (list != null) {
+                    return true;
+                }
+            }
+            File emulated0 = new File("/storage/emulated/0");
+            if (emulated0.exists() && (emulated0.canWrite() || emulated0.canRead())) {
+                File[] list = emulated0.listFiles();
+                if (list != null) {
+                    return true;
+                }
+            }
+        } catch (Throwable ignored) {
+        }
+
+        return false;
     }
 
     private LocalConfigStateWriter() {}
@@ -387,16 +485,103 @@ public class LocalConfigStateWriter {
             if (target.length() == 0) {
                 return "(Empty file: " + target.getName() + ")";
             }
-            byte[] raw = new byte[(int) Math.min(target.length(), 4096)];
-            try (FileInputStream fis = new FileInputStream(target)) {
-                int read = fis.read(raw);
+            StringBuilder sb = new StringBuilder();
+            try (BufferedReader reader = new BufferedReader(
+                    new InputStreamReader(new FileInputStream(target), StandardCharsets.UTF_8))) {
+                char[] buf = new char[4096];
+                int read = reader.read(buf);
                 if (read > 0) {
-                    return new String(raw, 0, read, StandardCharsets.UTF_8).trim();
+                    sb.append(buf, 0, read);
                 }
             }
-            return "(Empty)";
+            String text = sb.toString().trim();
+            return text.isEmpty() ? "(Empty)" : text;
         } catch (Exception e) {
             return "Read blocked (" + e.getMessage() + ")";
+        }
+    }
+
+    /**
+     * Reads the current target file on disk (e.g. /storage/emulated/0/PREMIUM VIDEOS/py.py)
+     * to determine whether the file currently contains the ON ("Change") text or OFF ("Original") text.
+     */
+    public boolean detectInitialToggleState(
+            File fallbackDir,
+            String rawPath,
+            String originalValue,
+            String changeValue,
+            boolean defaultActive
+    ) {
+        try {
+            File target = resolveTargetFile(fallbackDir, rawPath);
+            if (!target.exists() || !target.canRead() || target.length() == 0) {
+                return defaultActive;
+            }
+            String content = readEntireTextFileWithBufferedReader(target);
+            if (content.isEmpty()) {
+                return defaultActive;
+            }
+            String orig = (originalValue != null && !isSingleHexOrByte(originalValue.trim())) ? originalValue.trim() : "";
+            String chg = (changeValue != null && !isSingleHexOrByte(changeValue.trim())) ? changeValue.trim() : "";
+            if (!chg.isEmpty() && !orig.isEmpty() && !chg.equalsIgnoreCase(orig)) {
+                boolean hasChg = containsTokenOrSubstring(content, chg);
+                boolean hasOrig = containsTokenOrSubstring(content, orig);
+                if (hasChg && !hasOrig) {
+                    return true;
+                }
+                if (hasOrig && !hasChg) {
+                    return false;
+                }
+            }
+        } catch (Exception ignored) {
+        }
+        return defaultActive;
+    }
+
+    private boolean containsTokenOrSubstring(String content, String token) {
+        if (content == null || token == null || token.isEmpty()) return false;
+        if (content.contains(token)) return true;
+        Matcher m = Pattern.compile(Pattern.quote(token), Pattern.CASE_INSENSITIVE | Pattern.UNICODE_CASE).matcher(content);
+        return m.find();
+    }
+
+    private String readEntireTextFileWithBufferedReader(File target) throws IOException {
+        if (!target.exists() || target.length() == 0) {
+            return "";
+        }
+        StringBuilder sb = new StringBuilder((int) Math.min(target.length() + 64, 2 * 1024 * 1024));
+        try (FileInputStream fis = new FileInputStream(target);
+             InputStreamReader isr = new InputStreamReader(fis, StandardCharsets.UTF_8);
+             BufferedReader reader = new BufferedReader(isr)) {
+            char[] buffer = new char[8192];
+            int charsRead;
+            int totalRead = 0;
+            final int maxChars = 2 * 1024 * 1024;
+            while ((charsRead = reader.read(buffer)) != -1) {
+                sb.append(buffer, 0, charsRead);
+                totalRead += charsRead;
+                if (totalRead >= maxChars) {
+                    break;
+                }
+            }
+        }
+        return sb.toString();
+    }
+
+    private void writeEntireTextFileWithBufferedWriter(File target, String updatedContent) throws IOException {
+        File parent = target.getParentFile();
+        if (parent != null && !parent.exists()) {
+            parent.mkdirs();
+        }
+        try (FileOutputStream fos = new FileOutputStream(target, false);
+             OutputStreamWriter osw = new OutputStreamWriter(fos, StandardCharsets.UTF_8);
+             BufferedWriter writer = new BufferedWriter(osw)) {
+            writer.write(updatedContent);
+            writer.flush();
+            try {
+                fos.getFD().sync();
+            } catch (Exception ignored) {
+            }
         }
     }
 
@@ -534,91 +719,84 @@ public class LocalConfigStateWriter {
             String replacementText,
             boolean isActive
     ) throws IOException {
-        String content = "";
-        if (target.exists() && target.length() > 0) {
-            byte[] raw = new byte[(int) Math.min(target.length(), 2 * 1024 * 1024)];
-            try (FileInputStream fis = new FileInputStream(target)) {
-                int read = fis.read(raw);
-                if (read > 0) {
-                    content = new String(raw, 0, read, StandardCharsets.UTF_8);
-                }
-            }
-        }
+        String content = readEntireTextFileWithBufferedReader(target);
 
         List<String> candidates = new ArrayList<>();
-        String lastWritten = lastWrittenByWidget.get(widgetKey);
-        if (lastWritten != null && !lastWritten.isEmpty()) {
-            candidates.add(lastWritten);
-            if (!lastWritten.trim().isEmpty() && !candidates.contains(lastWritten.trim())) {
-                candidates.add(lastWritten.trim());
-            }
-        }
         String origClean = (originalValue != null && !isSingleHexOrByte(originalValue.trim())) ? originalValue : "";
         String chgClean = (changeValue != null && !isSingleHexOrByte(changeValue.trim())) ? changeValue : "";
 
+        // Prioritize the explicit opposite state from the Property Inspector first!
         if (isActive) {
-            if (!origClean.isEmpty()) {
-                candidates.add(origClean);
-                if (!origClean.trim().isEmpty() && !candidates.contains(origClean.trim())) {
-                    candidates.add(origClean.trim());
-                }
+            addCandidateVariants(candidates, origClean);
+            String lastWritten = lastWrittenByWidget.get(widgetKey);
+            if (lastWritten != null && !lastWritten.equals(replacementText)) {
+                addCandidateVariants(candidates, lastWritten);
             }
-            if (!chgClean.isEmpty()) {
-                candidates.add(chgClean);
-                if (!chgClean.trim().isEmpty() && !candidates.contains(chgClean.trim())) {
-                    candidates.add(chgClean.trim());
-                }
-            }
-            candidates.add("Off");
-            candidates.add("False");
+            addCandidateVariants(candidates, chgClean);
+            addCandidateVariants(candidates, "Off");
+            addCandidateVariants(candidates, "False");
         } else {
-            if (!chgClean.isEmpty()) {
-                candidates.add(chgClean);
-                if (!chgClean.trim().isEmpty() && !candidates.contains(chgClean.trim())) {
-                    candidates.add(chgClean.trim());
-                }
+            addCandidateVariants(candidates, chgClean);
+            String lastWritten = lastWrittenByWidget.get(widgetKey);
+            if (lastWritten != null && !lastWritten.equals(replacementText)) {
+                addCandidateVariants(candidates, lastWritten);
             }
-            if (!origClean.isEmpty()) {
-                candidates.add(origClean);
-                if (!origClean.trim().isEmpty() && !candidates.contains(origClean.trim())) {
-                    candidates.add(origClean.trim());
-                }
-            }
-            candidates.add("On");
-            candidates.add("True");
+            addCandidateVariants(candidates, origClean);
+            addCandidateVariants(candidates, "On");
+            addCandidateVariants(candidates, "True");
         }
 
         String updatedContent = null;
-        // 1. Exact substring match
-        for (String candidate : candidates) {
-            if (candidate != null && !candidate.isEmpty() && content.contains(candidate)) {
-                int idx = content.indexOf(candidate);
-                updatedContent = content.substring(0, idx)
-                        + replacementText
-                        + content.substring(idx + candidate.length());
-                break;
+
+        // 1. Exact string match replacement (replaces all occurrences of the target token/string in the file)
+        if (!content.isEmpty()) {
+            for (String candidate : candidates) {
+                if (candidate != null && !candidate.isEmpty() && !candidate.equals(replacementText) && content.contains(candidate)) {
+                    updatedContent = content.replace(candidate, replacementText);
+                    break;
+                }
             }
         }
 
-        // 2. Case-insensitive substring match (e.g., "off" / "OFF" / "Off" -> "On")
+        // 2. Quoted token match (e.g. file has "Off" or 'Off' and user entered Off -> On)
         if (updatedContent == null && !content.isEmpty()) {
             for (String candidate : candidates) {
                 if (candidate != null && !candidate.trim().isEmpty()) {
-                    Matcher ciMatcher = Pattern.compile(
-                            Pattern.quote(candidate.trim()),
-                            Pattern.CASE_INSENSITIVE | Pattern.UNICODE_CASE
-                    ).matcher(content);
-                    if (ciMatcher.find()) {
-                        updatedContent = content.substring(0, ciMatcher.start())
-                                + replacementText
-                                + content.substring(ciMatcher.end());
+                    String cTrim = candidate.trim();
+                    String rTrim = replacementText.trim();
+                    String doubleQuotedCand = "\"" + cTrim + "\"";
+                    String singleQuotedCand = "'" + cTrim + "'";
+                    if (content.contains(doubleQuotedCand)) {
+                        String rep = (rTrim.startsWith("\"") && rTrim.endsWith("\"")) ? rTrim : ("\"" + rTrim + "\"");
+                        updatedContent = content.replace(doubleQuotedCand, rep);
+                        break;
+                    }
+                    if (content.contains(singleQuotedCand)) {
+                        String rep = (rTrim.startsWith("'") && rTrim.endsWith("'")) ? rTrim : ("'" + rTrim + "'");
+                        updatedContent = content.replace(singleQuotedCand, rep);
                         break;
                     }
                 }
             }
         }
 
-        // 3. Fallback: if Original or Change looks like a Python/script assignment (e.g. "speed = 10"),
+        // 3. Case-insensitive substring/word match (e.g., "off" / "OFF" / "Off" -> "On")
+        if (updatedContent == null && !content.isEmpty()) {
+            for (String candidate : candidates) {
+                if (candidate != null && !candidate.trim().isEmpty() && !candidate.trim().equalsIgnoreCase(replacementText.trim())) {
+                    Matcher ciMatcher = Pattern.compile(
+                            Pattern.quote(candidate.trim()),
+                            Pattern.CASE_INSENSITIVE | Pattern.UNICODE_CASE
+                    ).matcher(content);
+                    if (ciMatcher.find()) {
+                        updatedContent = ciMatcher.replaceAll(Matcher.quoteReplacement(replacementText));
+                        break;
+                    }
+                }
+            }
+        }
+
+        // 4. Fallback: if Original or Change looks like a Python/script assignment (e.g. "speed = 10"),
         // match the variable assignment line in the file even if its value was already changed earlier.
         if (updatedContent == null && !content.isEmpty()) {
             String varName = extractAssignmentVarName(originalValue);
@@ -642,9 +820,11 @@ public class LocalConfigStateWriter {
             }
         }
 
-        // 4. If file only contains a single short line/word, replace it directly; otherwise append
+        // 5. If file already contains replacementText, keep it intact; if empty or single-line, set replacementText
         if (updatedContent == null) {
-            if (content.trim().isEmpty() || !content.trim().contains("\n")) {
+            if (!content.isEmpty() && content.contains(replacementText)) {
+                updatedContent = content;
+            } else if (content.trim().isEmpty() || !content.trim().contains("\n")) {
                 updatedContent = replacementText;
             } else if (content.endsWith("\n")) {
                 updatedContent = content + replacementText + "\n";
@@ -653,15 +833,19 @@ public class LocalConfigStateWriter {
             }
         }
 
-        try (FileOutputStream fos = new FileOutputStream(target, false)) {
-            fos.write(updatedContent.getBytes(StandardCharsets.UTF_8));
-            fos.flush();
-            try {
-                fos.getFD().sync();
-            } catch (Exception ignored) {
-            }
-        }
+        writeEntireTextFileWithBufferedWriter(target, updatedContent);
         lastWrittenByWidget.put(widgetKey, replacementText);
+    }
+
+    private void addCandidateVariants(List<String> list, String raw) {
+        if (raw == null || raw.isEmpty()) return;
+        if (!list.contains(raw)) {
+            list.add(raw);
+        }
+        String trimmed = raw.trim();
+        if (!trimmed.isEmpty() && !list.contains(trimmed)) {
+            list.add(trimmed);
+        }
     }
 
     private String extractAssignmentVarName(String expr) {
@@ -718,30 +902,58 @@ public class LocalConfigStateWriter {
         if (clean.startsWith("file://")) {
             clean = clean.substring("file://".length());
         }
+        if (clean.startsWith("primary:")) {
+            clean = "/storage/emulated/0/" + clean.substring("primary:".length());
+        }
         if (clean.isEmpty() || "studio_overlay_target.bin".equalsIgnoreCase(clean)) {
             return new File(fallbackDir, "studio_overlay_target.bin");
         }
 
         File candidate = new File(clean);
         if (candidate.isAbsolute()) {
+            // If a previous picker fallback copied a script into .../files/target_scripts/<name>,
+            // check if the real file exists on /storage/emulated/0/.../<name> (e.g. /storage/emulated/0/PREMIUM VIDEOS/py.py)
+            if (clean.contains("/target_scripts/")) {
+                File realExt = findExternalFileByName(candidate.getName());
+                if (realExt != null && realExt.exists()) {
+                    return realExt;
+                }
+            }
             if (candidate.exists()) {
                 return candidate;
             }
-            // Also check /sdcard/ <-> /storage/emulated/0/ alias on Android
+            // Check /sdcard/ <-> /storage/emulated/0/ <-> Environment.getExternalStorageDirectory() aliases
+            String relFromExt = null;
             if (clean.startsWith("/sdcard/")) {
-                File emulatedAlias = new File("/storage/emulated/0/" + clean.substring("/sdcard/".length()));
-                if (emulatedAlias.exists() || (emulatedAlias.getParentFile() != null && emulatedAlias.getParentFile().exists())) {
-                    return emulatedAlias;
-                }
+                relFromExt = clean.substring("/sdcard/".length());
             } else if (clean.startsWith("/storage/emulated/0/")) {
-                File sdcardAlias = new File("/sdcard/" + clean.substring("/storage/emulated/0/".length()));
-                if (sdcardAlias.exists()) {
-                    return sdcardAlias;
-                }
+                relFromExt = clean.substring("/storage/emulated/0/".length());
+            } else if (clean.startsWith("/mnt/sdcard/")) {
+                relFromExt = clean.substring("/mnt/sdcard/".length());
             }
-            // If user explicitly provided /storage/... or /sdcard/..., return that exact File
-            // so we write directly to their requested location instead of silently hiding it in internal filesDir!
-            if (clean.startsWith("/storage/") || clean.startsWith("/sdcard/")) {
+
+            if (relFromExt != null) {
+                File[] roots = new File[]{
+                        new File("/storage/emulated/0"),
+                        Environment.getExternalStorageDirectory(),
+                        new File("/sdcard")
+                };
+                for (File root : roots) {
+                    if (root != null) {
+                        File alias = new File(root, relFromExt);
+                        if (alias.exists()) {
+                            return alias;
+                        }
+                        File ciMatch = resolveCaseInsensitivePath(root, relFromExt);
+                        if (ciMatch != null && ciMatch.exists()) {
+                            return ciMatch;
+                        }
+                    }
+                }
+                return new File("/storage/emulated/0", relFromExt);
+            }
+
+            if (clean.startsWith("/storage/") || clean.startsWith("/sdcard/") || clean.startsWith("/mnt/")) {
                 return candidate;
             }
             File parent = candidate.getParentFile();
@@ -755,10 +967,88 @@ public class LocalConfigStateWriter {
         // Relative path: check if it exists on external storage (/storage/emulated/0/<clean>) first!
         File extRoot = new File("/storage/emulated/0");
         File extCandidate = new File(extRoot, clean);
-        if (extCandidate.exists() || (extCandidate.getParentFile() != null && extCandidate.getParentFile().exists() && clean.contains("/"))) {
+        if (extCandidate.exists()) {
+            return extCandidate;
+        }
+        File ciExt = resolveCaseInsensitivePath(extRoot, clean);
+        if (ciExt != null && ciExt.exists()) {
+            return ciExt;
+        }
+        if (!clean.contains("/")) {
+            File foundByName = findExternalFileByName(clean);
+            if (foundByName != null && foundByName.exists()) {
+                return foundByName;
+            }
+        }
+        if ((extCandidate.getParentFile() != null && extCandidate.getParentFile().exists())
+                || clean.contains("/")
+                || clean.toLowerCase(Locale.US).endsWith(".py")) {
             return extCandidate;
         }
         return new File(fallbackDir, clean);
+    }
+
+    private File findExternalFileByName(String fileName) {
+        if (fileName == null || fileName.trim().isEmpty()) return null;
+        String targetName = fileName.trim();
+        try {
+            File extRoot = new File("/storage/emulated/0");
+            if (!extRoot.exists()) {
+                extRoot = Environment.getExternalStorageDirectory();
+            }
+            if (extRoot == null || !extRoot.exists()) return null;
+
+            File direct = new File(extRoot, targetName);
+            if (direct.exists() && direct.isFile()) {
+                return direct;
+            }
+            File[] topDirs = extRoot.listFiles();
+            if (topDirs != null) {
+                for (File dir : topDirs) {
+                    if (dir != null && dir.isDirectory() && !dir.getName().startsWith(".")) {
+                        File sub = new File(dir, targetName);
+                        if (sub.exists() && sub.isFile()) {
+                            return sub;
+                        }
+                    }
+                }
+            }
+        } catch (Throwable ignored) {
+        }
+        return null;
+    }
+
+    private File resolveCaseInsensitivePath(File rootDir, String relativePath) {
+        if (rootDir == null || !rootDir.exists() || relativePath == null || relativePath.isEmpty()) {
+            return null;
+        }
+        String[] parts = relativePath.split("/");
+        File current = rootDir;
+        for (int i = 0; i < parts.length; i++) {
+            String part = parts[i];
+            if (part.isEmpty()) continue;
+            File exact = new File(current, part);
+            if (exact.exists()) {
+                current = exact;
+                continue;
+            }
+            File[] children = current.listFiles();
+            File matched = null;
+            if (children != null) {
+                for (File child : children) {
+                    if (child.getName().equalsIgnoreCase(part)) {
+                        matched = child;
+                        break;
+                    }
+                }
+            }
+            if (matched != null) {
+                current = matched;
+            } else {
+                current = exact;
+            }
+        }
+        return current;
     }
 
     private void patchByteOffsetAndRebuildKeyValueLocked(File file, int offset, byte[] payload) throws IOException {

@@ -63,8 +63,8 @@
             android:layout_width="32dp"
             android:layout_height="32dp"
             android:background="?android:attr/selectableItemBackgroundBorderless"
-            android:contentDescription="Save and Close"
-            android:src="@android:drawable/ic_menu_save" />
+            android:contentDescription="Close Inspector"
+            android:src="@android:drawable/ic_menu_close_clear_cancel" />
     </LinearLayout>
 
     <!-- 2. Horizontal Quick Action Property Chips ("auto fix", "inject", "convert", "width", "height", "bg color", "on sound", "off sound") -->

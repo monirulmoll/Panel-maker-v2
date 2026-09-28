@@ -434,32 +434,6 @@ fun SketchwareStudioSplitWorkspace(
                             horizontalArrangement = Arrangement.spacedBy(6.dp)
                         ) {
                             Surface(
-                                onClick = onSaveDesign,
-                                color = Color(0xFF00C853),
-                                shape = RoundedCornerShape(4.dp),
-                                modifier = Modifier.testTag("xml_bar_save_design_button")
-                            ) {
-                                Row(
-                                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
-                                    verticalAlignment = Alignment.CenterVertically,
-                                    horizontalArrangement = Arrangement.spacedBy(3.dp)
-                                ) {
-                                    Icon(
-                                        imageVector = Icons.Default.Save,
-                                        contentDescription = "Save Design",
-                                        tint = Color.White,
-                                        modifier = Modifier.size(11.dp)
-                                    )
-                                    Text(
-                                        text = "Save Design",
-                                        color = Color.White,
-                                        fontSize = 9.sp,
-                                        fontWeight = FontWeight.ExtraBold
-                                    )
-                                }
-                            }
-
-                            Surface(
                                 onClick = onOpenEditFloatingPanel,
                                 color = Color(0xFF0F172A),
                                 shape = RoundedCornerShape(4.dp),
