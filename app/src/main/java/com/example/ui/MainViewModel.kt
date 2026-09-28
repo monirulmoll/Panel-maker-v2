@@ -1753,12 +1753,42 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     /**
-     * Runs Google AI Studio-style step-by-step build status & error diagnostics in AI Mode,
-     * completely independent of Manual Mode, and announces "App tayar ho gaya!" with Preview, Float, Test & Download.
+     * Evaluates the user's message in AI Mode:
+     * - If the user sends a greeting ("hi", "hello", "kaise ho"), question ("help", "kya bana sakte ho"),
+     *   or vague request ("app banao" without details), replies conversationally asking what kind of app to build!
+     * - When the user describes an app or feature/widget modification, runs Google AI Studio-style
+     *   step-by-step build status & error diagnostics and announces "App tayar ho gaya!" with Preview, Float, Test & Download.
      */
     fun sendPromptInAiMode(prompt: String) {
         val cleanPrompt = prompt.trim()
         if (cleanPrompt.isEmpty() || _uiState.value.isGeneratingAiBlueprint) return
+
+        val existingAiProject = _uiState.value.aiBuiltProject
+        val evaluation = GgufBlueprintEngine.evaluateUserPrompt(
+            prompt = cleanPrompt,
+            existingProjectName = existingAiProject?.name
+        )
+
+        if (!evaluation.shouldBuildOrUpdateApp) {
+            val chatTurn = AiChatTurn(
+                id = System.currentTimeMillis(),
+                userPrompt = cleanPrompt,
+                aiResponseText = evaluation.conversationalReply,
+                steps = emptyList(),
+                isAppReady = false,
+                isConversationalReply = true,
+                generatedCodePreview = ""
+            )
+            _uiState.update {
+                it.copy(
+                    isGeneratingAiBlueprint = false,
+                    aiLiveBuildSteps = emptyList(),
+                    aiChatHistory = it.aiChatHistory + chatTurn,
+                    statusToast = "AI replied — tell AI what kind of app you want to build!"
+                )
+            }
+            return
+        }
 
         val initialSteps = listOf(
             AiBuildStepStatus(1, 5, "Parsing Prompt with GGUF Model", "Analyzing user instructions & target file path...", isCompleted = false),
@@ -1800,7 +1830,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         prompt = cleanPrompt,
                         projectId = -999L,
                         defaultTargetFilePath = defaultTarget,
-                        modelState = _uiState.value.ggufModelState
+                        modelState = _uiState.value.ggufModelState,
+                        existingProjectName = _uiState.value.aiBuiltProject?.name,
+                        existingComponents = _uiState.value.aiBuiltComponents
                     )
                 }
 
@@ -1841,18 +1873,24 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     projectName = spec.suggestedAppName,
                     overlayTitle = spec.suggestedOverlayTitle,
                     canvasWidthDp = 260,
-                    canvasHeightDp = 320,
+                    canvasHeightDp = (spec.components.size * 58 + 40).coerceIn(280, 420),
                     defaultTargetFilePath = targetFileForAi,
                     createdAt = now,
                     updatedAt = now
                 )
 
+                val widgetNamesList = spec.components
+                    .drop(1) // skip header title
+                    .joinToString(", ") { it.label }
+                    .ifBlank { spec.components.joinToString(", ") { it.label } }
+
                 val aiTurn = AiChatTurn(
                     id = now,
                     userPrompt = cleanPrompt,
-                    aiResponseText = "✅ App tayar ho gaya! '${isolatedAiProject.name}' (${isolatedAiProject.packageName}) successfully built with 0 errors. Use Preview, Float, Test, or Download below.",
+                    aiResponseText = "✅ App tayar ho gaya! '${isolatedAiProject.name}' (${isolatedAiProject.packageName}) successfully built with 0 errors.\n• Included Widgets: $widgetNamesList\n• Use Preview, Float, Test, or Download below!",
                     steps = step5Done,
                     isAppReady = true,
+                    isConversationalReply = false,
                     generatedCodePreview = spec.kotlinJavaSummary
                 )
 
@@ -1881,7 +1919,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     userPrompt = cleanPrompt,
                     aiResponseText = "❌ Error detected during build: ${e.message}",
                     steps = listOf(errorStep),
-                    isAppReady = false
+                    isAppReady = false,
+                    isConversationalReply = false
                 )
                 _uiState.update {
                     it.copy(

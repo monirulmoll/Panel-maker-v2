@@ -19,16 +19,19 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.consumeWindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -70,6 +73,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -523,7 +527,9 @@ fun StudioAiGgufGateScreen(
         Box(
             modifier = Modifier
                 .fillMaxSize()
-                .padding(innerPadding),
+                .padding(innerPadding)
+                .consumeWindowInsets(innerPadding)
+                .imePadding(),
             contentAlignment = Alignment.Center
         ) {
             Card(
@@ -749,6 +755,14 @@ fun StudioAiWorkspaceScreen(
     // Starts 100% empty — no pre-filled text!
     var userPromptInput by remember { mutableStateOf("") }
     var activeAiTab by remember { mutableStateOf(AiWorkspaceTab.PREVIEW) }
+    val listState = rememberLazyListState()
+
+    LaunchedEffect(chatHistory.size, isAiBuilding, aiBuiltProject) {
+        val totalItems = listState.layoutInfo.totalItemsCount
+        if (totalItems > 0) {
+            listState.animateScrollToItem(totalItems - 1)
+        }
+    }
 
     val storagePermLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.RequestMultiplePermissions()
@@ -834,6 +848,8 @@ fun StudioAiWorkspaceScreen(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(innerPadding)
+                .consumeWindowInsets(innerPadding)
+                .imePadding()
         ) {
             // PERMISSION BAR: Disappears completely once permissions are granted!
             if (!hasStoragePermission || !hasOverlayPermission) {
@@ -901,6 +917,7 @@ fun StudioAiWorkspaceScreen(
 
             // MAIN SCROLLABLE AI STREAM & INDEPENDENT PREVIEW / FLOAT / TEST / DOWNLOAD AREA
             LazyColumn(
+                state = listState,
                 modifier = Modifier
                     .weight(1f)
                     .fillMaxWidth(),
@@ -1013,14 +1030,20 @@ fun StudioAiWorkspaceScreen(
                                 }
                             }
 
-                            // AI Output Response ("App tayar ho gaya!")
+                            // AI Output Response (Conversational Reply OR "App tayar ho gaya!")
                             Surface(
-                                color = Color(0xFFECFDF5),
+                                color = if (turn.isConversationalReply) Color(0xFFF5F3FF) else Color(0xFFECFDF5),
                                 shape = RoundedCornerShape(10.dp),
-                                border = BorderStroke(1.dp, Color(0xFF10B981)),
+                                border = BorderStroke(
+                                    1.dp,
+                                    if (turn.isConversationalReply) Color(0xFF6366F1) else Color(0xFF10B981)
+                                ),
                                 modifier = Modifier
                                     .fillMaxWidth()
-                                    .testTag("ai_ready_output_banner")
+                                    .testTag(
+                                        if (turn.isConversationalReply) "ai_conversational_reply_banner"
+                                        else "ai_ready_output_banner"
+                                    )
                             ) {
                                 Column(
                                     modifier = Modifier.padding(12.dp),
@@ -1030,7 +1053,7 @@ fun StudioAiWorkspaceScreen(
                                         text = turn.aiResponseText,
                                         fontSize = 13.sp,
                                         fontWeight = FontWeight.ExtraBold,
-                                        color = Color(0xFF065F46)
+                                        color = if (turn.isConversationalReply) Color(0xFF312E81) else Color(0xFF065F46)
                                     )
                                     if (turn.generatedCodePreview.isNotBlank()) {
                                         Surface(
@@ -1406,6 +1429,38 @@ fun StudioAiWorkspaceScreen(
                                                                                     thumbColor = Color(0xFF38BDF8),
                                                                                     activeTrackColor = Color(0xFF0288D1)
                                                                                 )
+                                                                            )
+                                                                        }
+                                                                    }
+                                                                }
+                                                                ComponentWidgetType.INPUT.name -> {
+                                                                    var localInputText by remember(comp.id, comp.currentValue) {
+                                                                        mutableStateOf(comp.currentValue)
+                                                                    }
+                                                                    Surface(
+                                                                        color = Color.White,
+                                                                        shape = RoundedCornerShape(10.dp),
+                                                                        border = BorderStroke(1.dp, Color(0xFF38BDF8)),
+                                                                        modifier = Modifier.fillMaxWidth()
+                                                                    ) {
+                                                                        Column(
+                                                                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                                                                            verticalArrangement = Arrangement.spacedBy(4.dp)
+                                                                        ) {
+                                                                            Text(
+                                                                                text = comp.label,
+                                                                                color = Color(0xFF0F172A),
+                                                                                fontSize = 11.sp,
+                                                                                fontWeight = FontWeight.Bold
+                                                                            )
+                                                                            OutlinedTextField(
+                                                                                value = localInputText,
+                                                                                onValueChange = { newVal ->
+                                                                                    localInputText = newVal
+                                                                                    onTriggerAiWidgetTest(comp, newVal)
+                                                                                },
+                                                                                singleLine = true,
+                                                                                modifier = Modifier.fillMaxWidth()
                                                                             )
                                                                         }
                                                                     }

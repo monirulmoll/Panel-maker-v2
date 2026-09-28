@@ -33,6 +33,23 @@ class ExampleUnitTest {
     }
 
     @Test
+    fun ggufBlueprintEngine_repliesConversationallyToHiInsteadOfBuildingApp() {
+        val hiEval = GgufBlueprintEngine.evaluateUserPrompt("hi", existingProjectName = null)
+        assertFalse("Expected 'hi' not to trigger app build", hiEval.shouldBuildOrUpdateApp)
+        assertTrue(
+            "Expected reply to ask konsa/kaisa app banaye",
+            hiEval.conversationalReply.lowercase().contains("konsa") ||
+                hiEval.conversationalReply.lowercase().contains("kaisa")
+        )
+
+        val vagueEval = GgufBlueprintEngine.evaluateUserPrompt("app banao", existingProjectName = null)
+        assertFalse("Expected vague 'app banao' to ask which app to build", vagueEval.shouldBuildOrUpdateApp)
+
+        val calcEval = GgufBlueprintEngine.evaluateUserPrompt("Ek Calculator app banao", existingProjectName = null)
+        assertTrue("Expected specific app request to trigger app build", calcEval.shouldBuildOrUpdateApp)
+    }
+
+    @Test
     fun ggufValidation_rejectsWrongFileAndAcceptsValidGgufFile() {
         val tempRoot = Files.createTempDirectory("gguf_validation_test").toFile()
         val wrongFile = File(tempRoot, "not_a_model.txt").apply {
