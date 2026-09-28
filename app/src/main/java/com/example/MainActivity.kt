@@ -101,15 +101,23 @@ import com.example.ui.MainViewModel
 import com.example.ui.PropertyInspectorBottomDock
 import com.example.ui.SketchwarePaletteEntry
 import com.example.ui.SketchwareStudioSplitWorkspace
+import com.example.ui.StudioAiGgufGateScreen
+import com.example.ui.StudioAiWorkspaceScreen
 import com.example.ui.StudioDestination
 import com.example.ui.StudioEditCodeDialog
 import com.example.ui.StudioProjectLauncherScreen
 import com.example.ui.StudioUiState
+import com.example.ui.StudioWelcomeModeScreen
 import com.example.ui.theme.MyApplicationTheme
 
 class MainActivity : ComponentActivity() {
 
     private val viewModel: MainViewModel by viewModels()
+
+    override fun onResume() {
+        super.onResume()
+        viewModel.refreshOverlayPermission()
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -122,6 +130,58 @@ class MainActivity : ComponentActivity() {
                 val bundledStandaloneComponents by viewModel.bundledStandaloneComponents.collectAsStateWithLifecycle()
 
                 when (uiState.destination) {
+                    StudioDestination.WELCOME_SCREEN -> {
+                        StudioWelcomeModeScreen(
+                            hasStoragePermission = uiState.hasStoragePermission,
+                            hasOverlayPermission = uiState.hasOverlayPermission,
+                            onRefreshPermissions = viewModel::refreshOverlayPermission,
+                            onSelectOfflineMode = viewModel::openOfflineManualMode,
+                            onSelectOnlineAiMode = viewModel::openOnlineAiMode
+                        )
+                    }
+
+                    StudioDestination.AI_GGUF_GATE -> {
+                        BackHandler {
+                            viewModel.openOfflineManualMode()
+                        }
+                        StudioAiGgufGateScreen(
+                            importErrorMessage = uiState.ggufModelState.importErrorMessage,
+                            hasStoragePermission = uiState.hasStoragePermission,
+                            hasOverlayPermission = uiState.hasOverlayPermission,
+                            onRefreshPermissions = viewModel::refreshOverlayPermission,
+                            onImportGgufUri = viewModel::importGgufModelUri,
+                            onLoadGgufPath = viewModel::loadGgufModelFromPath,
+                            onSwitchToManualOfflineMode = viewModel::openOfflineManualMode
+                        )
+                    }
+
+                    StudioDestination.AI_STUDIO_WORKSPACE -> {
+                        BackHandler {
+                            viewModel.openOfflineManualMode()
+                        }
+                        StudioAiWorkspaceScreen(
+                            modelFileName = uiState.ggufModelState.modelFileName,
+                            modelArchitecture = uiState.ggufModelState.modelArchitecture,
+                            hasStoragePermission = uiState.hasStoragePermission,
+                            hasOverlayPermission = uiState.hasOverlayPermission,
+                            isAiBuilding = uiState.isGeneratingAiBlueprint,
+                            liveBuildSteps = uiState.aiLiveBuildSteps,
+                            chatHistory = uiState.aiChatHistory,
+                            aiBuiltProject = uiState.aiBuiltProject,
+                            aiBuiltComponents = uiState.aiBuiltComponents,
+                            isAiFloatingOverlayRunning = uiState.isAiFloatingOverlayRunning,
+                            aiCompiledApkSummary = uiState.aiCompiledApkSummary,
+                            onRefreshPermissions = viewModel::refreshOverlayPermission,
+                            onSendPromptToAi = viewModel::sendPromptInAiMode,
+                            onToggleAiFloatOverlay = viewModel::toggleAiModeFloatingOverlay,
+                            onTriggerAiWidgetTest = viewModel::triggerAiWidgetTest,
+                            onDownloadAiApk = viewModel::compileAndDownloadAiApk,
+                            onInstallAiApk = { viewModel.installCompiledApk(this@MainActivity) },
+                            onChangeGgufModel = viewModel::openGgufGateForChange,
+                            onSwitchToManualOfflineMode = viewModel::openOfflineManualMode
+                        )
+                    }
+
                     StudioDestination.COMPILED_STANDALONE_APP -> {
                         val activeProj = uiState.activeProject
                         val standaloneItems = if (uiState.isBundledStandaloneApk) {
@@ -163,7 +223,8 @@ class MainActivity : ComponentActivity() {
                             onDismissEditProjectDialog = { viewModel.openEditProjectDialog(null) },
                             onSaveProjectConfiguration = viewModel::updateProjectNameAndLogo,
                             onImportLogoUri = viewModel::importProjectLogoUri,
-                            onRefreshPermissions = viewModel::refreshOverlayPermission
+                            onRefreshPermissions = viewModel::refreshOverlayPermission,
+                            onOpenOnlineAiMode = viewModel::openOnlineAiMode
                         )
                     }
 
@@ -240,11 +301,6 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun contextPackageName(): String = packageName
-
-    override fun onResume() {
-        super.onResume()
-        viewModel.refreshOverlayPermission()
-    }
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -781,6 +837,7 @@ fun StudioCanvasBuilderScreen(
                 if (selectedComponent != null) {
                     PropertyInspectorBottomDock(
                         component = selectedComponent,
+                        hasStoragePermission = uiState.hasStoragePermission,
                         isAutoFixSize = project.autoFixSize,
                         onToggleAutoFixSize = onToggleAutoFixSize,
                         onOpenEditCode = onOpenEditCode,

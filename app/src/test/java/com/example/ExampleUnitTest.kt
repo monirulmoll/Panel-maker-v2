@@ -1,6 +1,9 @@
 package com.example
 
+import com.example.engine.GgufBlueprintEngine
+import com.example.engine.GgufModelState
 import com.example.engine.LocalConfigStateWriter
+import com.example.engine.StudioGenerationMode
 import org.junit.Assert.*
 import org.junit.Test
 import java.io.File
@@ -10,6 +13,45 @@ class ExampleUnitTest {
     @Test
     fun addition_isCorrect() {
         assertEquals(4, 2 + 2)
+    }
+
+    @Test
+    fun ggufBlueprintEngine_generatesWidgetsAndTargetPathFromPromptWithSampleFallback() {
+        val sampleState = GgufModelState(
+            mode = StudioGenerationMode.AI_GGUF_MODE,
+            isUsingSampleFallback = true
+        )
+        val spec = GgufBlueprintEngine.generateBlueprintFromPrompt(
+            prompt = "Create VIP Mod Menu with FPS toggle and Speed slider for /storage/emulated/0/PREMIUM VIDEOS/py.py",
+            projectId = 1L,
+            defaultTargetFilePath = "/storage/emulated/0/default.py",
+            modelState = sampleState
+        )
+        assertEquals("/storage/emulated/0/PREMIUM VIDEOS/py.py", spec.suggestedTargetFilePath)
+        assertTrue(spec.components.isNotEmpty())
+        assertTrue(spec.kotlinJavaSummary.contains("Sample GGUF Fallback"))
+    }
+
+    @Test
+    fun ggufValidation_rejectsWrongFileAndAcceptsValidGgufFile() {
+        val tempRoot = Files.createTempDirectory("gguf_validation_test").toFile()
+        val wrongFile = File(tempRoot, "not_a_model.txt").apply {
+            writeText("hello world", Charsets.UTF_8)
+        }
+        val invalidState = GgufBlueprintEngine.validateGgufFilePath(wrongFile.absolutePath)
+        assertFalse("Expected non-.gguf file to be rejected", invalidState.isValidGgufLoaded)
+        assertNotNull("Expected error message for non-.gguf file", invalidState.importErrorMessage)
+
+        val validGgufFile = File(tempRoot, "my_model_q4_k_m.gguf").apply {
+            writeBytes("GGUF\u0003\u0000\u0000\u0000_model_weights".toByteArray(Charsets.UTF_8))
+        }
+        val validState = GgufBlueprintEngine.validateGgufFilePath(validGgufFile.absolutePath)
+        assertTrue("Expected valid .gguf file to be accepted", validState.isValidGgufLoaded)
+        assertNull("Expected no error message for valid .gguf file", validState.importErrorMessage)
+
+        wrongFile.delete()
+        validGgufFile.delete()
+        tempRoot.delete()
     }
 
     @Test

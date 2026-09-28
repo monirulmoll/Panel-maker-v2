@@ -102,6 +102,7 @@ import java.util.Locale
 @Composable
 fun PropertyInspectorBottomDock(
     component: CanvasComponentEntity,
+    hasStoragePermission: Boolean = true,
     isAutoFixSize: Boolean = false,
     onToggleAutoFixSize: () -> Unit = {},
     onOpenEditCode: () -> Unit = {},
@@ -792,7 +793,7 @@ fun PropertyInspectorBottomDock(
                                     )
 
                                     // 1. PATH INPUT + PICK FILE BUTTON + STORAGE PERMISSION GRANT
-                                    val hasInspectorStoragePerm = LocalConfigStateWriter.hasStoragePermissionGranted(context)
+                                    val hasInspectorStoragePerm = hasStoragePermission && LocalConfigStateWriter.hasStoragePermissionGranted(context)
                                     if (!hasInspectorStoragePerm) {
                                         Row(
                                             modifier = Modifier

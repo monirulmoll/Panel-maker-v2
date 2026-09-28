@@ -6,11 +6,21 @@ import android.os.Build
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.animateContentSize
+import androidx.compose.animation.core.Spring
+import androidx.compose.animation.core.spring
+import androidx.compose.animation.expandVertically
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -32,12 +42,19 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AddCircleOutline
+import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.Build
+import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.DeleteOutline
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.FolderOpen
 import androidx.compose.material.icons.filled.Image
+import androidx.compose.material.icons.filled.Memory
+import androidx.compose.material.icons.filled.Tune
+import androidx.compose.material.icons.filled.UploadFile
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.AssistChip
+import androidx.compose.material3.AssistChipDefaults
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
@@ -62,6 +79,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
@@ -79,6 +97,7 @@ import com.example.R
 import com.example.blueprint.ApkCompilationEngine
 import com.example.data.StudioProjectEntity
 import com.example.engine.LocalConfigStateWriter
+import com.example.engine.StudioGenerationMode
 import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -144,7 +163,8 @@ fun StudioProjectLauncherScreen(
         newTargetSdk: Int
     ) -> Unit,
     onImportLogoUri: (android.net.Uri, (String) -> Unit) -> Unit,
-    onRefreshPermissions: () -> Unit = {}
+    onRefreshPermissions: () -> Unit = {},
+    onOpenOnlineAiMode: () -> Unit = {}
 ) {
     val context = LocalContext.current
     val dateFormat = remember { SimpleDateFormat("dd MMM yyyy, hh:mm a", Locale.US) }
@@ -168,18 +188,18 @@ fun StudioProjectLauncherScreen(
                         Surface(
                             shape = RoundedCornerShape(10.dp),
                             color = MaterialTheme.colorScheme.primary,
-                            modifier = Modifier.size(36.dp)
+                            modifier = Modifier.size(34.dp)
                         ) {
                             Box(contentAlignment = Alignment.Center) {
                                 Icon(
                                     imageVector = Icons.Default.Build,
                                     contentDescription = "Studio Error",
                                     tint = Color.White,
-                                    modifier = Modifier.size(20.dp)
+                                    modifier = Modifier.size(18.dp)
                                 )
                             }
                         }
-                        Spacer(modifier = Modifier.width(12.dp))
+                        Spacer(modifier = Modifier.width(10.dp))
                         Column {
                             Text(
                                 text = stringResource(R.string.launcher_title),
@@ -187,11 +207,38 @@ fun StudioProjectLauncherScreen(
                                 fontWeight = FontWeight.ExtraBold
                             )
                             Text(
-                                text = stringResource(R.string.launcher_subtitle),
+                                text = "Offline Mode (Manual Studio)",
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
                         }
+                    }
+                },
+                actions = {
+                    Button(
+                        onClick = onOpenOnlineAiMode,
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = Color(0xFF4F46E5),
+                            contentColor = Color.White
+                        ),
+                        shape = RoundedCornerShape(10.dp),
+                        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
+                        modifier = Modifier
+                            .padding(end = 10.dp)
+                            .height(36.dp)
+                            .testTag("launcher_switch_to_online_ai_button")
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.AutoAwesome,
+                            contentDescription = "Online AI Mode",
+                            modifier = Modifier.size(15.dp)
+                        )
+                        Spacer(modifier = Modifier.width(5.dp))
+                        Text(
+                            text = "Online / AI Mode",
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.ExtraBold
+                        )
                     }
                 },
                 colors = TopAppBarDefaults.topAppBarColors(
@@ -290,78 +337,86 @@ fun StudioProjectLauncherScreen(
                                 )
                             }
 
-                            // STORAGE PERMISSION & OVERLAY PERMISSION CONTROLS IN STUDIO ERROR
-                            Surface(
-                                color = Color(0xFFF8FAFC),
-                                shape = RoundedCornerShape(12.dp),
-                                border = BorderStroke(1.dp, Color(0xFFCBD5E1)),
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .testTag("launcher_permissions_card")
-                            ) {
-                                Column(
-                                    modifier = Modifier.padding(12.dp),
-                                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                            // PERMISSION BUTTONS: Disappear immediately once granted!
+                            if (!uiState.hasStoragePermission || !uiState.hasOverlayPermission) {
+                                Surface(
+                                    color = Color(0xFFF8FAFC),
+                                    shape = RoundedCornerShape(12.dp),
+                                    border = BorderStroke(1.dp, Color(0xFFCBD5E1)),
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .testTag("launcher_permissions_card")
                                 ) {
-                                    Text(
-                                        text = "App Permissions (Storage & Overlay Access):",
-                                        style = MaterialTheme.typography.labelMedium,
-                                        fontWeight = FontWeight.ExtraBold,
-                                        color = Color(0xFF0F172A)
-                                    )
-                                    Row(
-                                        modifier = Modifier.fillMaxWidth(),
-                                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                    Column(
+                                        modifier = Modifier.padding(12.dp),
+                                        verticalArrangement = Arrangement.spacedBy(8.dp)
                                     ) {
-                                        Button(
-                                            onClick = {
-                                                if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) {
-                                                    launcherStoragePermLauncher.launch(
-                                                        arrayOf(
-                                                            Manifest.permission.READ_EXTERNAL_STORAGE,
-                                                            Manifest.permission.WRITE_EXTERNAL_STORAGE
-                                                        )
+                                        Text(
+                                            text = "Required Permissions:",
+                                            style = MaterialTheme.typography.labelMedium,
+                                            fontWeight = FontWeight.ExtraBold,
+                                            color = Color(0xFF0F172A)
+                                        )
+                                        Row(
+                                            modifier = Modifier.fillMaxWidth(),
+                                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                        ) {
+                                            if (!uiState.hasStoragePermission) {
+                                                Button(
+                                                    onClick = {
+                                                        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) {
+                                                            launcherStoragePermLauncher.launch(
+                                                                arrayOf(
+                                                                    Manifest.permission.READ_EXTERNAL_STORAGE,
+                                                                    Manifest.permission.WRITE_EXTERNAL_STORAGE
+                                                                )
+                                                            )
+                                                        } else {
+                                                            LocalConfigStateWriter.requestStoragePermission(context)
+                                                        }
+                                                    },
+                                                    colors = ButtonDefaults.buttonColors(
+                                                        containerColor = Color(0xFFD97706),
+                                                        contentColor = Color.White
+                                                    ),
+                                                    shape = RoundedCornerShape(10.dp),
+                                                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 10.dp),
+                                                    modifier = Modifier
+                                                        .weight(1f)
+                                                        .height(44.dp)
+                                                        .testTag("launcher_grant_storage_permission_button")
+                                                ) {
+                                                    Text(
+                                                        text = "🔓 Allow Storage",
+                                                        fontSize = 11.sp,
+                                                        fontWeight = FontWeight.Bold
                                                     )
-                                                } else {
-                                                    LocalConfigStateWriter.requestStoragePermission(context)
                                                 }
-                                            },
-                                            colors = ButtonDefaults.buttonColors(
-                                                containerColor = if (uiState.hasStoragePermission) Color(0xFF16A34A) else Color(0xFFD97706),
-                                                contentColor = Color.White
-                                            ),
-                                            shape = RoundedCornerShape(10.dp),
-                                            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 10.dp),
-                                            modifier = Modifier
-                                                .weight(1f)
-                                                .testTag("launcher_grant_storage_permission_button")
-                                        ) {
-                                            Text(
-                                                text = if (uiState.hasStoragePermission) "✅ Storage Granted" else "🔓 Allow Storage",
-                                                fontSize = 11.sp,
-                                                fontWeight = FontWeight.Bold
-                                            )
-                                        }
+                                            }
 
-                                        Button(
-                                            onClick = {
-                                                LocalConfigStateWriter.requestOverlayPermission(context)
-                                            },
-                                            colors = ButtonDefaults.buttonColors(
-                                                containerColor = if (uiState.hasOverlayPermission) Color(0xFF16A34A) else Color(0xFF2563EB),
-                                                contentColor = Color.White
-                                            ),
-                                            shape = RoundedCornerShape(10.dp),
-                                            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 10.dp),
-                                            modifier = Modifier
-                                                .weight(1f)
-                                                .testTag("launcher_grant_overlay_permission_button")
-                                        ) {
-                                            Text(
-                                                text = if (uiState.hasOverlayPermission) "✅ Overlay Granted" else "🔓 Allow Overlay",
-                                                fontSize = 11.sp,
-                                                fontWeight = FontWeight.Bold
-                                            )
+                                            if (!uiState.hasOverlayPermission) {
+                                                Button(
+                                                    onClick = {
+                                                        LocalConfigStateWriter.requestOverlayPermission(context)
+                                                    },
+                                                    colors = ButtonDefaults.buttonColors(
+                                                        containerColor = Color(0xFF2563EB),
+                                                        contentColor = Color.White
+                                                    ),
+                                                    shape = RoundedCornerShape(10.dp),
+                                                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 10.dp),
+                                                    modifier = Modifier
+                                                        .weight(1f)
+                                                        .height(44.dp)
+                                                        .testTag("launcher_grant_overlay_permission_button")
+                                                ) {
+                                                    Text(
+                                                        text = "🔓 Allow Overlay",
+                                                        fontSize = 11.sp,
+                                                        fontWeight = FontWeight.Bold
+                                                    )
+                                                }
+                                            }
                                         }
                                     }
                                 }

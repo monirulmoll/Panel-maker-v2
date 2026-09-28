@@ -576,49 +576,55 @@ fun CompiledStandaloneAppScreen(
                 }
             }
 
-            // Always-visible Storage & Overlay Permission Status + Grant Buttons for Compiled APK
-            Row(
-                horizontalArrangement = Arrangement.spacedBy(10.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Button(
-                    onClick = { requestCompiledAppStoragePerm() },
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = if (hasAllFilesPerm) Color(0xFF15803D) else Color(0xFFD97706),
-                        contentColor = Color.White
-                    ),
-                    shape = RoundedCornerShape(10.dp),
-                    contentPadding = PaddingValues(horizontal = 14.dp, vertical = 10.dp),
-                    modifier = Modifier.testTag("standalone_grant_all_files_button")
+            // Storage & Overlay Permission Grant Buttons — each disappears immediately once granted!
+            if (!hasAllFilesPerm || !hasSystemOverlayPerm) {
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                    verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Text(
-                        text = if (hasAllFilesPerm) "Storage: Granted ✓" else "Grant Storage Permission",
-                        fontSize = 11.sp,
-                        fontWeight = FontWeight.Bold
-                    )
-                }
+                    if (!hasAllFilesPerm) {
+                        Button(
+                            onClick = { requestCompiledAppStoragePerm() },
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = Color(0xFFD97706),
+                                contentColor = Color.White
+                            ),
+                            shape = RoundedCornerShape(10.dp),
+                            contentPadding = PaddingValues(horizontal = 14.dp, vertical = 10.dp),
+                            modifier = Modifier.testTag("standalone_grant_all_files_button")
+                        ) {
+                            Text(
+                                text = "Grant Storage Permission",
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
+                    }
 
-                Button(
-                    onClick = { requestCompiledAppOverlayPerm() },
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = if (hasSystemOverlayPerm) Color(0xFF15803D) else Color(0xFF2563EB),
-                        contentColor = Color.White
-                    ),
-                    shape = RoundedCornerShape(10.dp),
-                    contentPadding = PaddingValues(horizontal = 14.dp, vertical = 10.dp),
-                    modifier = Modifier.testTag("standalone_grant_overlay_top_button")
-                ) {
-                    Text(
-                        text = if (hasSystemOverlayPerm) "Overlay: Granted ✓" else "Grant Overlay Permission",
-                        fontSize = 11.sp,
-                        fontWeight = FontWeight.Bold
-                    )
+                    if (!hasSystemOverlayPerm) {
+                        Button(
+                            onClick = { requestCompiledAppOverlayPerm() },
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = Color(0xFF2563EB),
+                                contentColor = Color.White
+                            ),
+                            shape = RoundedCornerShape(10.dp),
+                            contentPadding = PaddingValues(horizontal = 14.dp, vertical = 10.dp),
+                            modifier = Modifier.testTag("standalone_grant_overlay_top_button")
+                        ) {
+                            Text(
+                                text = "Grant Overlay Permission",
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
+                    }
                 }
             }
         }
 
-        // System Overlay & Storage Permission Helper (Fixes Android 13/14/15 "System Denied / Restricted Setting")
-        if ((showOverlayPermHelper || !hasSystemOverlayPerm || !hasAllFilesPerm) && (!hasSystemOverlayPerm || !hasAllFilesPerm)) {
+        // System Overlay & Storage Permission Helper (Disappears completely once permissions are granted!)
+        if (!hasSystemOverlayPerm || !hasAllFilesPerm) {
             Surface(
                 color = Color(0xFF0F172A),
                 shape = RoundedCornerShape(12.dp),
@@ -680,40 +686,44 @@ fun CompiledStandaloneAppScreen(
                             )
                         }
 
-                        Button(
-                            onClick = { requestCompiledAppStoragePerm() },
-                            colors = ButtonDefaults.buttonColors(
-                                containerColor = if (hasAllFilesPerm) Color(0xFF15803D) else Color(0xFFD97706)
-                            ),
-                            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 8.dp),
-                            modifier = Modifier
-                                .weight(1f)
-                                .testTag("grant_storage_permission_helper_button")
-                        ) {
-                            Text(
-                                text = if (hasAllFilesPerm) "Storage ✓" else "2. Storage",
-                                color = Color.White,
-                                fontSize = 10.sp,
-                                fontWeight = FontWeight.Bold
-                            )
+                        if (!hasAllFilesPerm) {
+                            Button(
+                                onClick = { requestCompiledAppStoragePerm() },
+                                colors = ButtonDefaults.buttonColors(
+                                    containerColor = Color(0xFFD97706)
+                                ),
+                                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 8.dp),
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .testTag("grant_storage_permission_helper_button")
+                            ) {
+                                Text(
+                                    text = "2. Storage",
+                                    color = Color.White,
+                                    fontSize = 10.sp,
+                                    fontWeight = FontWeight.Bold
+                                )
+                            }
                         }
 
-                        Button(
-                            onClick = { requestCompiledAppOverlayPerm() },
-                            colors = ButtonDefaults.buttonColors(
-                                containerColor = if (hasSystemOverlayPerm) Color(0xFF15803D) else Color(0xFF2563EB)
-                            ),
-                            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 8.dp),
-                            modifier = Modifier
-                                .weight(1f)
-                                .testTag("grant_overlay_permission_button")
-                        ) {
-                            Text(
-                                text = if (hasSystemOverlayPerm) "Overlay ✓" else "3. Overlay",
-                                color = Color.White,
-                                fontSize = 10.sp,
-                                fontWeight = FontWeight.Bold
-                            )
+                        if (!hasSystemOverlayPerm) {
+                            Button(
+                                onClick = { requestCompiledAppOverlayPerm() },
+                                colors = ButtonDefaults.buttonColors(
+                                    containerColor = Color(0xFF2563EB)
+                                ),
+                                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 8.dp),
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .testTag("grant_overlay_permission_button")
+                            ) {
+                                Text(
+                                    text = "3. Overlay",
+                                    color = Color.White,
+                                    fontSize = 10.sp,
+                                    fontWeight = FontWeight.Bold
+                                )
+                            }
                         }
                     }
                 }
