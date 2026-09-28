@@ -27,6 +27,13 @@ data class AiBuildStepStatus(
     val hasError: Boolean = false
 )
 
+data class GeneratedFileArtifact(
+    val name: String,
+    val relativePath: String,
+    val fullPath: String,
+    val role: String
+)
+
 data class AiChatTurn(
     val id: Long = System.currentTimeMillis(),
     val userPrompt: String,
@@ -35,7 +42,18 @@ data class AiChatTurn(
     val isAppReady: Boolean = false,
     val isConversationalReply: Boolean = false,
     val generatedCodePreview: String = "",
-    val generatedScratchFiles: Map<String, String> = emptyMap()
+    val generatedScratchFiles: Map<String, String> = emptyMap(),
+    val appName: String = "",
+    val packageName: String = "",
+    val apkFileName: String = "",
+    val apkFilePath: String = "",
+    val publicDownloadApkPath: String = "",
+    val projectRootPath: String = "",
+    val targetDataFileName: String = "",
+    val targetDataFilePath: String = "",
+    val isFloatingOverlayApp: Boolean = false,
+    val appCategory: String = "STANDALONE_ANDROID_APP",
+    val fileArtifacts: List<GeneratedFileArtifact> = emptyList()
 )
 
 enum class AiPromptIntent {
@@ -77,7 +95,15 @@ data class GeneratedBlueprintSpec(
     val generatedScratchFiles: Map<String, String> = emptyMap(),
     val compilerDiagnostics: List<String> = emptyList(),
     val autoPatchedFixes: List<String> = emptyList(),
-    val finalErrorCount: Int = 0
+    val finalErrorCount: Int = 0,
+    val isFloatingOverlayApp: Boolean = false,
+    val appCategory: String = "STANDALONE_ANDROID_APP",
+    val apkFileName: String = "",
+    val apkOutputPath: String = "",
+    val publicDownloadApkPath: String = "",
+    val projectRootPath: String = "",
+    val structuredBuildOutput: String = "",
+    val fileArtifacts: List<GeneratedFileArtifact> = emptyList()
 )
 
 /**
@@ -417,10 +443,42 @@ object GgufBlueprintEngine {
     ): AiPromptEvaluation {
         val clean = prompt.trim()
         val normalized = clean.lowercase(Locale.US)
-            .replace(Regex("[^a-z0-9/._?\\s]"), " ")
+            .replace(Regex("[^a-z0-9/._?+\\-*×÷^%()=\\s]"), " ")
             .replace(Regex("\\s+"), " ")
             .trim()
-        val words = normalized.replace("?", "").split(" ").filter { it.isNotBlank() }
+        val words = clean.lowercase(Locale.US)
+            .replace(Regex("[^a-z0-9/._\\s]"), " ")
+            .replace(Regex("\\s+"), " ")
+            .trim()
+            .split(" ")
+            .filter { it.isNotBlank() }
+
+        // 0. Check if the prompt is a direct math / arithmetic calculation question (e.g., "what is 900 + 727288", "900 + 727288", "calculate 25 * 40")
+        val mathAnswer = evaluateMathQueryOrNull(clean)
+        val explicitlyWantsAppBuild = words.any {
+            it in setOf("app", "application", "apk", "ui", "screen", "layout", "widget", "overlay", "panel", "button", "slider", "toggle", "switch")
+        } && words.any {
+            it in setOf("create", "make", "build", "generate", "develop", "banao", "bana", "banaye", "banado", "design")
+        }
+
+        if (mathAnswer != null && !explicitlyWantsAppBuild) {
+            val dynamicReply = synthesizeDynamicBotReply(
+                rawPrompt = clean,
+                normalized = normalized,
+                words = words,
+                intent = AiPromptIntent.CONVERSATIONAL_CHAT,
+                existingProjectName = existingProjectName,
+                existingComponents = existingComponents,
+                modelState = modelState,
+                turnIndex = chatHistory.size,
+                precomputedMathAnswer = mathAnswer
+            )
+            return AiPromptEvaluation(
+                intent = AiPromptIntent.CONVERSATIONAL_CHAT,
+                shouldBuildOrUpdateApp = false,
+                conversationalReply = dynamicReply
+            )
+        }
 
         val hasActionBuildVerb = words.any {
             it in setOf(
@@ -429,7 +487,7 @@ object GgufBlueprintEngine {
                 "delete", "rename", "patch", "modify", "update", "implement", "design"
             )
         }
-        val hasSpecificAppOrCodeTarget = hasAppFeatureKeywords(normalized)
+        val hasSpecificAppOrCodeTarget = hasAppFeatureKeywords(normalized, words)
 
         // 1. If the user explicitly asks to add features, write code, or build a specific app/widget -> Trigger Pipeline!
         if ((hasActionBuildVerb && hasSpecificAppOrCodeTarget) ||
@@ -453,7 +511,8 @@ object GgufBlueprintEngine {
             existingProjectName = existingProjectName,
             existingComponents = existingComponents,
             modelState = modelState,
-            turnIndex = chatHistory.size
+            turnIndex = chatHistory.size,
+            precomputedMathAnswer = null
         )
 
         return AiPromptEvaluation(
@@ -463,10 +522,212 @@ object GgufBlueprintEngine {
         )
     }
 
+    private data class MathEvaluationResult(
+        val expressionSummary: String,
+        val rawResultText: String,
+        val formattedResultText: String,
+        val stepBreakdown: String
+    )
+
+    /**
+     * Detects and computes arithmetic/math expressions in English, Hindi, or Hinglish
+     * (e.g., "what is 900 + 727288", "900 + 727288", "add 900 and 727288", "(25 + 75) * 4", "20% of 450", "sqrt 144").
+     */
+    private fun evaluateMathQueryOrNull(rawPrompt: String): MathEvaluationResult? {
+        val lower = rawPrompt.trim().lowercase(Locale.US)
+        // Must not be a file path or hex memory offset prompt
+        if ("/storage/" in lower || "/sdcard/" in lower || "0x" in lower) return null
+
+        // Check percentage pattern: "X% of Y" or "X percent of Y"
+        val percentMatch = Regex("""(-?\d+(?:\.\d+)?)\s*(?:%|percent)\s+of\s+(-?\d+(?:\.\d+)?)""").find(lower)
+        if (percentMatch != null) {
+            val pct = percentMatch.groupValues[1].toDoubleOrNull()
+            val base = percentMatch.groupValues[2].toDoubleOrNull()
+            if (pct != null && base != null) {
+                val value = (pct / 100.0) * base
+                return formatMathResult("${formatNumberPlain(pct)}% of ${formatNumberPlain(base)}", value)
+            }
+        }
+
+        // Check square root pattern: "sqrt(X)", "sqrt X", "square root of X"
+        val sqrtMatch = Regex("""(?:sqrt|square\s+root\s+of)\s*\(?\s*(-?\d+(?:\.\d+)?)\s*\)?""").find(lower)
+        if (sqrtMatch != null) {
+            val num = sqrtMatch.groupValues[1].toDoubleOrNull()
+            if (num != null && num >= 0.0) {
+                val value = kotlin.math.sqrt(num)
+                return formatMathResult("√${formatNumberPlain(num)}", value)
+            }
+        }
+
+        // Convert natural-language math operators into symbolic operators when surrounded by numbers
+        var exprCandidate = lower
+            .replace(",", "")
+            .replace("multiplied by", "*")
+            .replace("divided by", "/")
+            .replace("to the power of", "^")
+            .replace(Regex("""(?<=\d\s)plus(?=\s+\d)"""), "+")
+            .replace(Regex("""(?<=\d\s)add(?=\s+\d)"""), "+")
+            .replace(Regex("""(?<=\d\s)minus(?=\s+\d)"""), "-")
+            .replace(Regex("""(?<=\d\s)subtract(?=\s+\d)"""), "-")
+            .replace(Regex("""(?<=\d\s)(?:times|into|guna|x|×)(?=\s+\d)"""), "*")
+            .replace(Regex("""(?<=\d\s)(?:divide|÷)(?=\s+\d)"""), "/")
+            .replace(Regex("""(?<=\d\s)power(?=\s+\d)"""), "^")
+
+        // Also handle "add X and Y" / "sum of X and Y" / "multiply X and Y"
+        val addPairMatch = Regex("""(?:add|sum\s+of)\s+(-?\d+(?:\.\d+)?)\s+(?:and|&|aur)\s+(-?\d+(?:\.\d+)?)""").find(exprCandidate)
+        if (addPairMatch != null) {
+            exprCandidate = "${addPairMatch.groupValues[1]} + ${addPairMatch.groupValues[2]}"
+        }
+        val mulPairMatch = Regex("""(?:multiply)\s+(-?\d+(?:\.\d+)?)\s+(?:and|by|&|aur)\s+(-?\d+(?:\.\d+)?)""").find(exprCandidate)
+        if (mulPairMatch != null) {
+            exprCandidate = "${mulPairMatch.groupValues[1]} * ${mulPairMatch.groupValues[2]}"
+        }
+
+        // Extract mathematical expression containing at least two numbers and one operator (+, -, *, /, ^, %)
+        val mathRegex = Regex("""(\(?\s*-?\d+(?:\.\d+)?\s*\)?(?:\s*[+\-*×÷/^%]\s*\(?\s*-?\d+(?:\.\d+)?\s*\)?)+)""")
+        val match = mathRegex.find(exprCandidate) ?: return null
+        val extractedExpr = match.value
+            .replace('×', '*')
+            .replace('÷', '/')
+            .replace(Regex("\\s+"), " ")
+            .trim()
+
+        // Ensure there's an actual operator between numbers
+        if (!extractedExpr.any { it in charArrayOf('+', '-', '*', '/', '^', '%') }) return null
+
+        val computed = evaluateArithmeticExpressionSafely(extractedExpr) ?: return null
+        if (computed.isNaN() || computed.isInfinite()) return null
+
+        return formatMathResult(extractedExpr, computed)
+    }
+
+    private fun formatMathResult(expression: String, value: Double): MathEvaluationResult {
+        val plain = formatNumberPlain(value)
+        val formatted = formatNumberWithCommas(value)
+        val displayAnswer = if (plain != formatted) "$plain ($formatted)" else plain
+        return MathEvaluationResult(
+            expressionSummary = expression,
+            rawResultText = plain,
+            formattedResultText = formatted,
+            stepBreakdown = "$expression = $displayAnswer"
+        )
+    }
+
+    private fun formatNumberPlain(value: Double): String {
+        val longVal = value.toLong()
+        return if (kotlin.math.abs(value - longVal.toDouble()) < 1e-9) {
+            longVal.toString()
+        } else {
+            String.format(Locale.US, "%.6f", value).trimEnd('0').trimEnd('.')
+        }
+    }
+
+    private fun formatNumberWithCommas(value: Double): String {
+        val longVal = value.toLong()
+        return if (kotlin.math.abs(value - longVal.toDouble()) < 1e-9) {
+            java.text.NumberFormat.getIntegerInstance(Locale.US).format(longVal)
+        } else {
+            String.format(Locale.US, "%,.4f", value).trimEnd('0').trimEnd('.')
+        }
+    }
+
+    /**
+     * Recursive-descent arithmetic parser supporting +, -, *, /, %, ^, unary +/-, and parentheses.
+     */
+    private fun evaluateArithmeticExpressionSafely(expr: String): Double? {
+        val tokens = mutableListOf<String>()
+        var i = 0
+        val s = expr.replace(" ", "")
+        while (i < s.length) {
+            val c = s[i]
+            when {
+                c.isDigit() || c == '.' -> {
+                    val start = i
+                    while (i < s.length && (s[i].isDigit() || s[i] == '.')) i++
+                    tokens.add(s.substring(start, i))
+                }
+                c in charArrayOf('+', '-', '*', '/', '%', '^', '(', ')') -> {
+                    tokens.add(c.toString())
+                    i++
+                }
+                else -> return null
+            }
+        }
+        if (tokens.isEmpty()) return null
+        return ArithmeticParser(tokens).parseAll()
+    }
+
+    private class ArithmeticParser(private val tokens: List<String>) {
+        private var pos = 0
+
+        fun parseAll(): Double? {
+            val result = parseExpression() ?: return null
+            return if (pos == tokens.size) result else null
+        }
+
+        private fun parseExpression(): Double? {
+            var left = parseTerm() ?: return null
+            while (pos < tokens.size && (tokens[pos] == "+" || tokens[pos] == "-")) {
+                val op = tokens[pos++]
+                val right = parseTerm() ?: return null
+                left = if (op == "+") left + right else left - right
+            }
+            return left
+        }
+
+        private fun parseTerm(): Double? {
+            var left = parsePower() ?: return null
+            while (pos < tokens.size && (tokens[pos] == "*" || tokens[pos] == "/" || tokens[pos] == "%")) {
+                val op = tokens[pos++]
+                val right = parsePower() ?: return null
+                left = when (op) {
+                    "*" -> left * right
+                    "/" -> if (right == 0.0) return null else left / right
+                    "%" -> if (right == 0.0) return null else left % right
+                    else -> left
+                }
+            }
+            return left
+        }
+
+        private fun parsePower(): Double? {
+            var base = parseUnary() ?: return null
+            if (pos < tokens.size && tokens[pos] == "^") {
+                pos++
+                val exp = parsePower() ?: return null
+                base = Math.pow(base, exp)
+            }
+            return base
+        }
+
+        private fun parseUnary(): Double? {
+            if (pos < tokens.size && (tokens[pos] == "+" || tokens[pos] == "-")) {
+                val op = tokens[pos++]
+                val operand = parseUnary() ?: return null
+                return if (op == "-") -operand else operand
+            }
+            return parsePrimary()
+        }
+
+        private fun parsePrimary(): Double? {
+            if (pos >= tokens.size) return null
+            val tok = tokens[pos]
+            if (tok == "(") {
+                pos++
+                val inside = parseExpression() ?: return null
+                if (pos >= tokens.size || tokens[pos] != ")") return null
+                pos++
+                return inside
+            }
+            pos++
+            return tok.toDoubleOrNull()
+        }
+    }
+
     private fun isPureQuestionWithoutBuildIntent(normalized: String, words: List<String>): Boolean {
-        val questionStarters = setOf("what", "why", "how", "who", "where", "when", "kya", "kaise", "kyu", "kon", "kaun")
+        val questionStarters = setOf("what", "why", "how", "who", "where", "when", "which", "kya", "kaise", "kyu", "kyun", "kon", "kaun", "kitna", "kitne")
         val buildVerbs = setOf("make", "build", "create", "generate", "write", "banao", "bana", "add", "jodo", "remove", "hatao")
-        return words.firstOrNull() in questionStarters && words.none { it in buildVerbs }
+        return (words.firstOrNull() in questionStarters || "?" in normalized) && words.none { it in buildVerbs }
     }
 
     private fun classifyConversationalSubIntent(
@@ -501,7 +762,7 @@ object GgufBlueprintEngine {
     /**
      * Dynamically constructs a natural, non-fixed conversational response synthesized by the bot
      * based on the user's exact input words, language (Hindi/Hinglish vs English), active GGUF model,
-     * and current workspace state.
+     * math calculations, and current workspace state.
      */
     private fun synthesizeDynamicBotReply(
         rawPrompt: String,
@@ -511,15 +772,32 @@ object GgufBlueprintEngine {
         existingProjectName: String?,
         existingComponents: List<CanvasComponentEntity>,
         modelState: GgufModelState?,
-        turnIndex: Int
+        turnIndex: Int,
+        precomputedMathAnswer: MathEvaluationResult? = null
     ): String {
         val modelBadge = extractGgufEmbeddedDescriptor(modelState)
         val isHinglishOrHindi = words.any {
             it in setOf(
-                "hi", "kaise", "ho", "kya", "haal", "hal", "bhai", "banao", "bana", "konsa", "kaisa",
+                "kaise", "ho", "kya", "haal", "hal", "bhai", "banao", "bana", "konsa", "kaisa",
                 "namaste", "salam", "tum", "tu", "aap", "kon", "kaun", "madad", "acha", "accha",
-                "theek", "thik", "haan", "nahi", "shukriya", "pagal", "galat", "bekar", "tatti", "aur", "batao"
+                "theek", "thik", "haan", "nahi", "shukriya", "pagal", "galat", "bekar", "tatti",
+                "aur", "batao", "kitna", "kitne", "hota", "hai"
             )
+        }
+
+        // If the user asked a math / calculation question (e.g. "what is 900 + 727288"), answer it directly and accurately!
+        val mathResult = precomputedMathAnswer ?: evaluateMathQueryOrNull(rawPrompt)
+        if (mathResult != null) {
+            val formattedPart = if (mathResult.rawResultText != mathResult.formattedResultText) {
+                "**${mathResult.rawResultText}** (${mathResult.formattedResultText})"
+            } else {
+                "**${mathResult.rawResultText}**"
+            }
+            return if (isHinglishOrHindi) {
+                "${mathResult.expressionSummary} ka jawab hai: $formattedPart.\n\nAur koi calculation puchna ho ya koi custom Android app scratch se banwana ho to bataiye!"
+            } else {
+                "The answer to `${mathResult.expressionSummary}` is $formattedPart.\n\nFeel free to ask another question or let me know if you want to build or code an Android app from scratch!"
+            }
         }
 
         val asksHowAreYou = ("how are you" in normalized || "how r u" in normalized || "how is it going" in normalized ||
@@ -554,10 +832,10 @@ object GgufBlueprintEngine {
                 "I'm doing great and running smoothly on $modelBadge with 0 compiler errors! How are you doing today?"
             }
             asksIdentity && isHinglishOrHindi -> {
-                "Main aapka Autonomous Android AI Agent hoon ($modelBadge par powered). Main normal chat bhi kar sakta hoon aur scratch se real Kotlin/Java code aur Android apps bhi likh sakta hoon."
+                "Main aapka Autonomous Android AI Agent hoon ($modelBadge par powered). Main normal chat aur calculations bhi kar sakta hoon, aur scratch se real Kotlin/Java code aur Android apps bhi likh sakta hoon."
             }
             asksIdentity -> {
-                "I am your Autonomous Android Development Assistant powered by $modelBadge. I can chat with you naturally or write & compile real Android Kotlin/Java code from scratch."
+                "I am your Autonomous Android Development Assistant powered by $modelBadge. I can chat with you naturally, solve calculations, or write & compile real Android Kotlin/Java code from scratch."
             }
             isThanks && isHinglishOrHindi -> {
                 "Aapka swagat hai! Khushi hui ki main aapki madad kar saka."
@@ -566,7 +844,7 @@ object GgufBlueprintEngine {
                 "You're very welcome! Happy to help anytime."
             }
             isApologyTrigger -> {
-                "Samajh gaya! Main bina aapke bole koi bhi fixed template ya random build trigger nahi karunga—aap jo bolenge wahi scratch se code likhunga."
+                "Samajh gaya! Main bina aapke bole koi bhi fixed template ya random build trigger nahi karunga—aap jo bolenge wahi jawab dunga ya scratch se code likhunga."
             }
             isMorning -> "Good morning! Hope you're having a great start to your day."
             isEvening -> "Good evening! Ready to chat or code whenever you are."
@@ -589,9 +867,9 @@ object GgufBlueprintEngine {
                 if (topicKeywords.isNotEmpty()) {
                     val topicStr = topicKeywords.joinToString(" ")
                     if (isHinglishOrHindi) {
-                        "'$topicStr' ke baare me baat karte hain—main iske liye custom Kotlin/Java logic aur dynamic Android UI scratch se tayar kar sakta hoon."
+                        "'$topicStr' ke baare me baat karte hain—main ispar aapke sawal ka jawab de sakta hoon ya iske liye custom Kotlin/Java logic aur dynamic Android UI scratch se tayar kar sakta hoon."
                     } else {
-                        "Regarding '$topicStr'—I can help explain how it works in Android or write custom Kotlin/Java source code for it from scratch."
+                        "Regarding '$topicStr'—I can help answer your question or write custom Kotlin/Java source code for it from scratch."
                     }
                 } else {
                     if (isHinglishOrHindi) "Ji bilkul, bataiye main aapki kya madad karun?" else "Got it! Let me know what's on your mind."
@@ -609,7 +887,7 @@ object GgufBlueprintEngine {
             }
             else -> {
                 if (isHinglishOrHindi || turnIndex == 0) {
-                    "Bataiye aaj hum konsa aur kaisa app banaye? Aap koi bhi custom idea, features, buttons/sliders/inputs, ya Kotlin/Java logic bataiye—main bina template ke scratch se code likh kar compile kar dunga."
+                    "Bataiye aaj hum konsa aur kaisa app banaye? Aap koi bhi sawal puch sakte hain ya custom app idea, buttons/sliders/inputs, aur Kotlin/Java logic bata sakte hain—main bina template ke scratch se code likh kar compile kar dunga."
                 } else {
                     "Tell me what kind of app (konsa aur kaisa app) or Android feature you'd like me to write from scratch, or feel free to ask me any question!"
                 }
@@ -619,23 +897,65 @@ object GgufBlueprintEngine {
         return "$openingSegment\n\n$followUpPromptSegment".trim()
     }
 
-    private fun hasAppFeatureKeywords(normalized: String): Boolean {
-        val keywords = listOf(
-            "calc", "calculator", "hisab", "math", "addition", "multiply", "divide", "subtract",
-            "music", "song", "audio", "player", "volume", "bass", "dj", "equalizer",
-            "note", "notes", "todo", "task", "diary", "reminder", "clipboard",
-            "timer", "stopwatch", "clock", "alarm", "countdown",
-            "torch", "flashlight", "light", "brightness", "dimmer", "night",
-            "battery", "ram", "cleaner", "cooler", "cpu", "optimizer", "ping", "network", "monitor",
-            "login", "password", "key", "auth", "otp",
-            "counter", "clicker", "count", "tally", "auto clicker",
+    private fun hasAppFeatureKeywords(normalized: String, words: List<String> = emptyList()): Boolean {
+        val wordSet = if (words.isNotEmpty()) {
+            words.toSet()
+        } else {
+            normalized.split(Regex("[^a-z0-9.]+")).filter { it.isNotBlank() }.toSet()
+        }
+        val exactWordKeywords = setOf(
+            "apk", "aab", "installer", "package", "standalone",
+            "calculator", "calc", "hisab", "math", "scientific", "arithmetic",
+            "music", "song", "audio", "player", "volume", "bass", "dj", "equalizer", "radio", "recorder",
+            "note", "notes", "todo", "task", "diary", "reminder", "clipboard", "editor", "writer",
+            "timer", "stopwatch", "clock", "alarm", "countdown", "calendar",
+            "torch", "flashlight", "brightness", "dimmer", "compass", "speedometer",
+            "battery", "ram", "cleaner", "cooler", "cpu", "optimizer", "ping", "network", "monitor", "wifi", "bluetooth",
+            "login", "password", "auth", "otp", "signup", "register", "form",
+            "counter", "clicker", "tally",
+            "weather", "quiz", "game", "browser", "camera", "gallery", "chat", "messenger",
+            "fitness", "bmi", "expense", "budget", "finance", "dictionary", "translator", "file", "manager", "explorer", "gps", "map",
             "vip", "fps", "boost", "booster", "mod", "menu", "aimbot", "esp", "hack", "speed", "fov", "bypass", "gyro", "sensitivity",
-            "python", ".py", ".bin", ".cfg", ".json", ".txt", ".sh", ".lua", "/storage/", "/sdcard/",
-            "button", "btn", "toggle", "switch", "slider", "seekbar", "input", "textbox", "edittext", "text", "panel", "floating", "overlay",
+            "python", "button", "btn", "toggle", "switch", "slider", "seekbar", "input", "textbox", "edittext", "panel", "floating", "overlay",
             "service", "activity", "kotlin", "java", "script", "patcher", "offset", "hex",
-            "tracker", "converter", "generator", "scanner", "controller", "dashboard", "hud"
+            "tracker", "converter", "generator", "scanner", "controller", "dashboard", "hud", "display", "screen"
         )
-        return keywords.any { it in normalized }
+        val pathOrExtSubstrings = listOf(
+            ".apk", ".py", ".bin", ".cfg", ".json", ".txt", ".sh", ".lua", "/storage/", "/sdcard/", "auto clicker"
+        )
+        return wordSet.any { it in exactWordKeywords } || pathOrExtSubstrings.any { it in normalized }
+    }
+
+    @JvmStatic
+    fun isFloatingOverlayPrompt(prompt: String): Boolean {
+        val lower = prompt.lowercase(Locale.US)
+        val words = lower.split(Regex("[^a-z0-9.]+")).filter { it.isNotBlank() }.toSet()
+        val floatingKeywords = setOf(
+            "floating", "float", "overlay", "mod", "hud", "aimbot", "esp", "fov", "bypass", "offset", "hex"
+        )
+        return words.any { it in floatingKeywords } ||
+            "mod menu" in lower ||
+            "floating panel" in lower ||
+            "floating window" in lower ||
+            ".py" in lower ||
+            ".bin" in lower ||
+            ".lua" in lower
+    }
+
+    @JvmStatic
+    fun detectAppCategory(prompt: String, isFloating: Boolean): String {
+        val lower = prompt.lowercase(Locale.US)
+        return when {
+            isFloating -> "FLOATING_OVERLAY_APP"
+            "calc" in lower || "hisab" in lower || "math" in lower || "arithmetic" in lower -> "CALCULATOR_APP"
+            "timer" in lower || "stopwatch" in lower || "countdown" in lower || "alarm" in lower || "clock" in lower -> "TIMER_APP"
+            "note" in lower || "todo" in lower || "task" in lower || "diary" in lower || "clipboard" in lower -> "NOTES_APP"
+            "convert" in lower || "bmi" in lower || "currency" in lower || "temperature" in lower || "unit" in lower -> "CONVERTER_APP"
+            "counter" in lower || "tally" in lower || "clicker" in lower -> "COUNTER_APP"
+            "login" in lower || "auth" in lower || "otp" in lower || "password" in lower || "register" in lower -> "AUTH_APP"
+            "music" in lower || "audio" in lower || "player" in lower || "dj" in lower || "equalizer" in lower -> "MUSIC_APP"
+            else -> "STANDALONE_ANDROID_APP"
+        }
     }
 
     /**
@@ -695,6 +1015,11 @@ object GgufBlueprintEngine {
             .find(cleanPrompt)?.value?.trim()
         val extractedPath = pathWithPyOrExt ?: fallbackSimplePath ?: defaultTargetFilePath
 
+        val isPureApkExportOfExisting = !existingProjectName.isNullOrBlank() &&
+            existingComponents.isNotEmpty() &&
+            ("apk" in lower) &&
+            !hasSpecificDomainOverride(lower)
+
         // 2. Check if user is incrementally editing an already-built AI app
         val isIncrementalEdit = !existingProjectName.isNullOrBlank() &&
             existingComponents.isNotEmpty() &&
@@ -702,10 +1027,21 @@ object GgufBlueprintEngine {
                 lower.startsWith("rename ") || lower.startsWith("update ") || lower.startsWith("change ") ||
                 "aur add" in lower || "jodo" in lower || "hatao" in lower || "naam badal" in lower)
 
+        val isFloating = if (isPureApkExportOfExisting || isIncrementalEdit) {
+            existingComponents.firstOrNull()?.label?.contains("Panel", ignoreCase = true) == true ||
+                isFloatingOverlayPrompt(cleanPrompt)
+        } else {
+            isFloatingOverlayPrompt(cleanPrompt)
+        }
+        val appCategory = detectAppCategory(cleanPrompt, isFloating)
+
         val rawAppName: String
         val rawComponents: List<CanvasComponentEntity>
 
-        if (isIncrementalEdit) {
+        if (isPureApkExportOfExisting) {
+            rawAppName = existingProjectName!!
+            rawComponents = existingComponents
+        } else if (isIncrementalEdit) {
             val incrementalPair = applyDynamicIncrementalEdit(
                 cleanPrompt = cleanPrompt,
                 lower = lower,
@@ -718,20 +1054,27 @@ object GgufBlueprintEngine {
             rawComponents = incrementalPair.second
         } else {
             rawAppName = synthesizeDynamicAppName(cleanPrompt, lower)
-            val astNodes = parsePromptIntoDynamicAstNodes(cleanPrompt, lower, rawAppName)
+            val astNodes = parsePromptIntoDynamicAstNodes(cleanPrompt, lower, rawAppName, isFloating, appCategory)
+            val headerTitle = if (isFloating) "$rawAppName Panel" else rawAppName
             rawComponents = buildComponentsFromDynamicAst(
                 astNodes = astNodes,
                 projectId = projectId,
-                overlayTitle = "$rawAppName Panel",
-                targetFilePath = extractedPath
+                overlayTitle = headerTitle,
+                targetFilePath = extractedPath,
+                isFloating = isFloating,
+                appCategory = appCategory
             )
         }
 
         val slug = rawAppName.lowercase(Locale.US)
             .replace(Regex("[^a-z0-9]+"), "")
             .ifEmpty { "aiscratchapp" }
+        val fileSlug = rawAppName.lowercase(Locale.US)
+            .replace(Regex("[^a-z0-9]+"), "_")
+            .trim('_')
+            .ifEmpty { "ai_scratch_app" }
         val suggestedPkg = "com.ai.$slug"
-        val suggestedOverlayTitle = "$rawAppName Panel"
+        val suggestedOverlayTitle = if (isFloating) "$rawAppName Panel" else rawAppName
 
         val modelSourceTag = if (modelState.isUsingSampleFallback) {
             "Sample GGUF Fallback (${modelState.modelFileName.ifBlank { SAMPLE_GGUF_FILENAME }})"
@@ -747,7 +1090,9 @@ object GgufBlueprintEngine {
             targetFilePath = extractedPath,
             prompt = cleanPrompt,
             modelSourceTag = modelSourceTag,
-            components = rawComponents
+            components = rawComponents,
+            isFloating = isFloating,
+            appCategory = appCategory
         )
 
         // 4. Run Autonomous Multi-Pass Compiler Scan & Self-Healing Fix Loop until 0 errors
@@ -759,28 +1104,87 @@ object GgufBlueprintEngine {
             rawScratchFiles = initialScratchFiles
         )
 
-        val primaryKotlinServicePath = "src/main/java/${suggestedPkg.replace('.', '/')}/AiDynamicOverlayService.kt"
-        val primaryJavaLogicPath = "src/main/java/${suggestedPkg.replace('.', '/')}/AiScratchLogicEngine.java"
-        val kotlinServiceCode = compileReport.verifiedScratchFiles[primaryKotlinServicePath].orEmpty()
-        val javaLogicCode = compileReport.verifiedScratchFiles[primaryJavaLogicPath].orEmpty()
+        val baseFilesDir = File(extractedPath).parentFile?.absolutePath ?: "/data/user/0/com.example/files"
+        val projectRootPath = "$baseFilesDir/ai_scratch_workspace/$suggestedPkg"
+        val apkFileName = "${fileSlug}.apk"
+        val apkOutputPath = "$baseFilesDir/compiled_apks/$apkFileName"
+        val publicDownloadApkPath = "/storage/emulated/0/Download/$apkFileName"
+        val targetDataFileName = File(extractedPath).name.ifBlank { "${fileSlug}_state.bin" }
+
+        val artifacts = mutableListOf<GeneratedFileArtifact>()
+        compileReport.verifiedScratchFiles.keys.forEach { relPath ->
+            val shortName = relPath.substringAfterLast('/')
+            val role = when {
+                shortName == "AndroidManifest.xml" -> "ANDROID_MANIFEST"
+                shortName.endsWith(".gradle.kts") || shortName.endsWith(".gradle") -> "GRADLE_BUILD_CONFIG"
+                shortName.endsWith(".xml") -> "XML_UI_LAYOUT"
+                shortName.endsWith(".kt") -> "KOTLIN_SOURCE"
+                shortName.endsWith(".java") -> "JAVA_ENGINE_SOURCE"
+                else -> "SOURCE_FILE"
+            }
+            artifacts.add(
+                GeneratedFileArtifact(
+                    name = shortName,
+                    relativePath = relPath,
+                    fullPath = "$projectRootPath/$relPath",
+                    role = role
+                )
+            )
+        }
+        artifacts.add(
+            GeneratedFileArtifact(
+                name = apkFileName,
+                relativePath = "build/outputs/apk/release/$apkFileName",
+                fullPath = apkOutputPath,
+                role = "SIGNED_INSTALLABLE_APK"
+            )
+        )
+        artifacts.add(
+            GeneratedFileArtifact(
+                name = targetDataFileName,
+                relativePath = targetDataFileName,
+                fullPath = extractedPath,
+                role = "RUNTIME_DATA_TARGET"
+            )
+        )
+
+        val structuredBuildOutput = formatStructuredCodeBuildOutput(
+            appName = rawAppName,
+            packageName = suggestedPkg,
+            appCategory = appCategory,
+            isFloating = isFloating,
+            apkFileName = apkFileName,
+            apkOutputPath = apkOutputPath,
+            publicDownloadApkPath = publicDownloadApkPath,
+            projectRootPath = projectRootPath,
+            targetDataFileName = targetDataFileName,
+            targetDataFilePath = extractedPath,
+            artifacts = artifacts,
+            finalErrorCount = compileReport.finalErrorCount
+        )
 
         val fullScratchCodeSummary = buildString {
             appendLine("// ====================================================================")
             appendLine("// AUTONOMOUS SCRATCH CODE ENGINE • Generated via $modelSourceTag")
-            appendLine("// App: $rawAppName ($suggestedPkg) | Target: $extractedPath")
-            appendLine("// Compiler Status: ${compileReport.finalErrorCount} Errors (${compileReport.autoPatchedFixes.size} references auto-patched)")
+            appendLine("// APP_NAME: $rawAppName | PACKAGE_NAME: $suggestedPkg | MODE: $appCategory")
+            appendLine("// APK_NAME: $apkFileName | APK_PATH: $apkOutputPath")
+            appendLine("// PUBLIC_APK_PATH: $publicDownloadApkPath")
+            appendLine("// PROJECT_ROOT_PATH: $projectRootPath")
+            appendLine("// TARGET_DATA_NAME: $targetDataFileName | TARGET_DATA_PATH: $extractedPath")
+            appendLine("// COMPILER_STATUS: ${compileReport.finalErrorCount} ERRORS (${compileReport.autoPatchedFixes.size} auto-patched)")
             appendLine("// ====================================================================")
             if (compileReport.autoPatchedFixes.isNotEmpty()) {
                 compileReport.autoPatchedFixes.forEach { fix ->
                     appendLine("// [AUTO-FIXED] $fix")
                 }
             }
-            appendLine()
-            appendLine("// --- FILE 1: $primaryKotlinServicePath ---")
-            appendLine(kotlinServiceCode)
-            appendLine()
-            appendLine("// --- FILE 2: $primaryJavaLogicPath ---")
-            appendLine(javaLogicCode)
+            compileReport.verifiedScratchFiles.entries.forEachIndexed { idx, (relPath, code) ->
+                val fileName = relPath.substringAfterLast('/')
+                val absPath = "$projectRootPath/$relPath"
+                appendLine()
+                appendLine("// --- FILE ${idx + 1}: NAME=$fileName | PATH=$absPath ---")
+                appendLine(code)
+            }
         }.trim()
 
         return GeneratedBlueprintSpec(
@@ -793,21 +1197,139 @@ object GgufBlueprintEngine {
             generatedScratchFiles = compileReport.verifiedScratchFiles,
             compilerDiagnostics = compileReport.diagnosticsLog,
             autoPatchedFixes = compileReport.autoPatchedFixes,
-            finalErrorCount = compileReport.finalErrorCount
+            finalErrorCount = compileReport.finalErrorCount,
+            isFloatingOverlayApp = isFloating,
+            appCategory = appCategory,
+            apkFileName = apkFileName,
+            apkOutputPath = apkOutputPath,
+            publicDownloadApkPath = publicDownloadApkPath,
+            projectRootPath = projectRootPath,
+            structuredBuildOutput = structuredBuildOutput,
+            fileArtifacts = artifacts
         )
+    }
+
+    private fun hasSpecificDomainOverride(lower: String): Boolean {
+        val domainWords = listOf(
+            "calculator", "calc", "hisab", "math", "timer", "stopwatch", "alarm",
+            "note", "todo", "diary", "music", "audio", "player", "converter", "counter",
+            "login", "password", "vip", "mod", "fps", "gyro", "sensitivity"
+        )
+        return domainWords.any { it in lower }
+    }
+
+    private fun formatStructuredCodeBuildOutput(
+        appName: String,
+        packageName: String,
+        appCategory: String,
+        isFloating: Boolean,
+        apkFileName: String,
+        apkOutputPath: String,
+        publicDownloadApkPath: String,
+        projectRootPath: String,
+        targetDataFileName: String,
+        targetDataFilePath: String,
+        artifacts: List<GeneratedFileArtifact>,
+        finalErrorCount: Int
+    ): String {
+        val pkgDir = packageName.replace('.', '/')
+        return buildString {
+            appendLine("[BUILD_TARGET_NAME_AND_PATH_MANIFEST]")
+            appendLine("APP_NAME: $appName")
+            appendLine("PACKAGE_NAME: $packageName")
+            appendLine("APP_TYPE: ${if (isFloating) "FLOATING_OVERLAY_APK ($appCategory)" else "STANDALONE_ANDROID_APK ($appCategory)"}")
+            appendLine("APK_NAME: $apkFileName")
+            appendLine("APK_PATH: $apkOutputPath")
+            appendLine("PUBLIC_APK_PATH: $publicDownloadApkPath")
+            appendLine("WORKSPACE_NAME: $packageName")
+            appendLine("WORKSPACE_PATH: $projectRootPath")
+            appendLine("DATA_FILE_NAME: $targetDataFileName")
+            appendLine("DATA_FILE_PATH: $targetDataFilePath")
+            appendLine()
+            appendLine("[ALL_FILES_NAME_AND_PATH]")
+            artifacts.forEachIndexed { idx, item ->
+                appendLine("${idx + 1}. NAME: ${item.name} | PATH: ${item.fullPath} | ROLE: ${item.role}")
+            }
+            appendLine()
+            appendLine("[BUILD_COMMANDS]")
+            appendLine("\$ mkdir -p \"$projectRootPath/src/main/java/$pkgDir\" \"$projectRootPath/src/main/res/layout\"")
+            appendLine("\$ aapt2 compile --dir \"$projectRootPath/src/main/res\" -o \"$projectRootPath/build/resources.zip\"")
+            appendLine("\$ kotlinc \"$projectRootPath/src/main/java/$pkgDir/MainActivity.kt\" \"$projectRootPath/src/main/java/$pkgDir/AiDynamicOverlayService.kt\" -d \"$projectRootPath/build/classes\"")
+            appendLine("\$ javac \"$projectRootPath/src/main/java/$pkgDir/AiScratchLogicEngine.java\" -d \"$projectRootPath/build/classes\"")
+            appendLine("\$ d8 \"$projectRootPath/build/classes\" --output \"$projectRootPath/build/dex\"")
+            appendLine("\$ apksigner sign --v1-signing-enabled true --v2-signing-enabled true --v3-signing-enabled true --out \"$apkOutputPath\"")
+            append("BUILD_STATUS: SUCCESS (${finalErrorCount}_ERRORS)")
+        }
     }
 
     /**
      * Dynamically parses any natural language user prompt into a list of `DynamicWidgetAstNode`s
      * by splitting the prompt into semantic clauses, extracting custom labels, numbers, ranges,
-     * hex offsets, and actions without relying on rigid templates.
+     * hex offsets, and actions without relying on rigid templates or default toggle templates.
      */
     private fun parsePromptIntoDynamicAstNodes(
         cleanPrompt: String,
         lower: String,
-        appName: String
+        appName: String,
+        isFloating: Boolean,
+        appCategory: String
     ): List<DynamicWidgetAstNode> {
         val nodes = mutableListOf<DynamicWidgetAstNode>()
+
+        // If Calculator app is requested, dynamically construct full Calculator Input + Keypad Buttons
+        if (appCategory == "CALCULATOR_APP") {
+            nodes.add(
+                DynamicWidgetAstNode(
+                    widgetType = ComponentWidgetType.INPUT,
+                    label = "Math Expression Input",
+                    fieldSlug = "math_expr_input",
+                    byteOffsetHex = "0x04",
+                    offPayload = "0",
+                    onPayload = "CALC_INPUT",
+                    initialValue = "",
+                    sliderMax = 100,
+                    bgColorHex = "#FFFFFF",
+                    textColorHex = "#0F172A",
+                    soundTrigger = "SOFT_TAP",
+                    customLogicExpression = "currentExpression = inputValue != null ? inputValue.trim() : \"\";"
+                )
+            )
+            val keypadButtons = listOf(
+                "AC" to "#DC2626", "(" to "#334155", ")" to "#334155", "÷" to "#0288D1",
+                "7" to "#1E293B", "8" to "#1E293B", "9" to "#1E293B", "×" to "#0288D1",
+                "4" to "#1E293B", "5" to "#1E293B", "6" to "#1E293B", "-" to "#0288D1",
+                "1" to "#1E293B", "2" to "#1E293B", "3" to "#1E293B", "+" to "#0288D1",
+                "0" to "#1E293B", "." to "#1E293B", "%" to "#334155", "=" to "#16A34A"
+            )
+            var offsetCursor = 8
+            for ((index, pair) in keypadButtons.withIndex()) {
+                val (keyLabel, bgHex) = pair
+                val hexOff = String.format(Locale.US, "0x%02X", offsetCursor)
+                val onPayloadTag = when (keyLabel) {
+                    "=" -> "CALC_EVAL"
+                    "AC" -> "CALC_CLEAR"
+                    else -> "CALC_KEY_$keyLabel"
+                }
+                nodes.add(
+                    DynamicWidgetAstNode(
+                        widgetType = ComponentWidgetType.BUTTON,
+                        label = keyLabel,
+                        fieldSlug = "calc_key_${index + 1}",
+                        byteOffsetHex = hexOff,
+                        offPayload = "0",
+                        onPayload = onPayloadTag,
+                        initialValue = "0",
+                        sliderMax = 100,
+                        bgColorHex = bgHex,
+                        textColorHex = "#FFFFFF",
+                        soundTrigger = if (keyLabel == "=") "SUCCESS_CHIME" else "CLICK_POP",
+                        customLogicExpression = "onCalculatorKeyPressed(\"$keyLabel\");"
+                    )
+                )
+                offsetCursor += 4
+            }
+            return nodes
+        }
 
         // Split prompt into clauses around conjunctions and punctuation
         val rawClauses = cleanPrompt
@@ -816,7 +1338,7 @@ object GgufBlueprintEngine {
             .map { it.trim() }
             .filter { it.length >= 2 }
 
-        var offsetCursor = 0
+        var offsetCursor = 4
 
         for (clause in rawClauses) {
             val cLower = clause.lowercase(Locale.US)
@@ -835,19 +1357,20 @@ object GgufBlueprintEngine {
                 cLower.contains("input") || cLower.contains("textbox") || cLower.contains("text box") ||
                     cLower.contains("edittext") || cLower.contains("enter ") || cLower.contains("write ") ||
                     cLower.contains("type ") || cLower.contains("password") || cLower.contains("key") ||
-                    cLower.contains("note") || cLower.contains("number") || cLower.contains("expression") -> ComponentWidgetType.INPUT
+                    cLower.contains("note") || cLower.contains("number") || cLower.contains("expression") ||
+                    cLower.contains("field") || cLower.contains("search") -> ComponentWidgetType.INPUT
 
                 cLower.contains("toggle") || cLower.contains("switch") || cLower.contains("on/off") ||
-                    cLower.contains("enable") || cLower.contains("lock") || cLower.contains("boost") ||
-                    cLower.contains("bypass") || cLower.contains("aimbot") || cLower.contains("esp") ||
-                    cLower.contains("torch") || cLower.contains("flashlight") || cLower.contains("play") ||
-                    cLower.contains("pause") || cLower.contains("timer") || cLower.contains("pin") -> ComponentWidgetType.TOGGLE
+                    (isFloating && (cLower.contains("enable") || cLower.contains("lock") || cLower.contains("boost") ||
+                        cLower.contains("bypass") || cLower.contains("aimbot") || cLower.contains("esp") ||
+                        cLower.contains("gyro"))) -> ComponentWidgetType.TOGGLE
 
                 cLower.contains("button") || cLower.contains("btn") || cLower.contains("click") ||
                     cLower.contains("tap") || cLower.contains("calculate") || cLower.contains("reset") ||
                     cLower.contains("clear") || cLower.contains("save") || cLower.contains("apply") ||
                     cLower.contains("verify") || cLower.contains("unlock") || cLower.contains("clean") ||
-                    cLower.contains("next") || cLower.contains("run") || cLower.contains("execute") -> ComponentWidgetType.BUTTON
+                    cLower.contains("next") || cLower.contains("run") || cLower.contains("execute") ||
+                    cLower.contains("start") || cLower.contains("stop") || cLower.contains("convert") -> ComponentWidgetType.BUTTON
 
                 else -> null
             }
@@ -881,70 +1404,67 @@ object GgufBlueprintEngine {
         }
 
         // Synthesize domain-specific functional controls dynamically from the prompt's semantic concepts
-        // if the user gave a high-level prompt (e.g., "Make a Calculator app" or "Build a Floating Timer")
-        // so every generated app is rich, interactive, and tailored to the prompt's exact domain.
-        val semanticConcepts = inferSemanticOperationsFromPrompt(cleanPrompt, lower, appName)
+        val semanticConcepts = inferSemanticOperationsFromPrompt(cleanPrompt, lower, appName, isFloating, appCategory)
         for (concept in semanticConcepts) {
             val alreadyCovered = nodes.any {
                 it.widgetType == concept.widgetType &&
                     it.label.lowercase(Locale.US).take(6) == concept.label.lowercase(Locale.US).take(6)
             }
-            if (!alreadyCovered && nodes.size < 6) {
+            if (!alreadyCovered && nodes.size < 8) {
                 val hexOff = String.format(Locale.US, "0x%02X", offsetCursor)
                 nodes.add(concept.copy(byteOffsetHex = hexOff, fieldSlug = "${concept.fieldSlug}_${nodes.size + 1}"))
                 offsetCursor += 4
             }
         }
 
-        // Guarantee at least 3 interactive controls synthesized from the prompt's tokens if still sparse
         if (nodes.isEmpty()) {
             val baseSlug = appName.lowercase(Locale.US).replace(Regex("[^a-z0-9]+"), "_").trim('_').ifEmpty { "custom" }
             nodes.add(
                 DynamicWidgetAstNode(
-                    widgetType = ComponentWidgetType.TOGGLE,
-                    label = "$appName Active Switch",
-                    fieldSlug = "${baseSlug}_toggle_1",
-                    byteOffsetHex = "0x00",
-                    offPayload = "Off",
-                    onPayload = "On",
-                    initialValue = "0",
-                    sliderMax = 100,
-                    bgColorHex = "#1E293B",
-                    textColorHex = "#F8FAFC",
-                    soundTrigger = "CLICK_POP",
-                    customLogicExpression = "stateActive = isEnabled; patchTarget(0x00, isEnabled ? \"On\" : \"Off\");"
-                )
-            )
-            nodes.add(
-                DynamicWidgetAstNode(
-                    widgetType = ComponentWidgetType.SLIDER,
-                    label = "$appName Intensity",
-                    fieldSlug = "${baseSlug}_slider_2",
+                    widgetType = ComponentWidgetType.INPUT,
+                    label = "$appName Input Value",
+                    fieldSlug = "${baseSlug}_input_1",
                     byteOffsetHex = "0x04",
-                    offPayload = "0",
-                    onPayload = "100",
-                    initialValue = "50",
+                    offPayload = "",
+                    onPayload = "Ready",
+                    initialValue = "",
                     sliderMax = 100,
-                    bgColorHex = "#0F172A",
-                    textColorHex = "#38BDF8",
+                    bgColorHex = "#FFFFFF",
+                    textColorHex = "#0F172A",
                     soundTrigger = "SOFT_TAP",
-                    customLogicExpression = "intensityValue = Math.max(0, Math.min(100, sliderProgress));"
+                    customLogicExpression = "inputState = inputValue != null ? inputValue.trim() : \"\";"
                 )
             )
             nodes.add(
                 DynamicWidgetAstNode(
                     widgetType = ComponentWidgetType.BUTTON,
                     label = "Execute $appName",
-                    fieldSlug = "${baseSlug}_btn_3",
+                    fieldSlug = "${baseSlug}_exec_btn_2",
                     byteOffsetHex = "0x08",
                     offPayload = "Idle",
-                    onPayload = "Executed",
+                    onPayload = "EXECUTE",
                     initialValue = "0",
                     sliderMax = 100,
                     bgColorHex = "#2563EB",
                     textColorHex = "#FFFFFF",
                     soundTrigger = "LASER_PING",
-                    customLogicExpression = "executionCount++; commitStateToDisk();"
+                    customLogicExpression = "executionCount++; processInputAndRender(inputState);"
+                )
+            )
+            nodes.add(
+                DynamicWidgetAstNode(
+                    widgetType = ComponentWidgetType.BUTTON,
+                    label = "Clear / Reset",
+                    fieldSlug = "${baseSlug}_reset_btn_3",
+                    byteOffsetHex = "0x0C",
+                    offPayload = "0",
+                    onPayload = "RESET",
+                    initialValue = "0",
+                    sliderMax = 100,
+                    bgColorHex = "#DC2626",
+                    textColorHex = "#FFFFFF",
+                    soundTrigger = "SOFT_TAP",
+                    customLogicExpression = "inputState = \"\"; resetDisplay();"
                 )
             )
         }
@@ -954,263 +1474,475 @@ object GgufBlueprintEngine {
 
     /**
      * Dynamically infers functional operations from the prompt's semantic nouns & verbs
-     * (e.g., math expressions, audio controls, timer state, file patching, or custom tool actions)
-     * so that the generated AST and Kotlin/Java code implement real working behavior.
+     * without falling back to default toggle templates unless floating/toggle is requested.
      */
     private fun inferSemanticOperationsFromPrompt(
         cleanPrompt: String,
         lower: String,
-        appName: String
+        appName: String,
+        isFloating: Boolean,
+        appCategory: String
     ): List<DynamicWidgetAstNode> {
         val inferred = mutableListOf<DynamicWidgetAstNode>()
 
-        if ("calc" in lower || "hisab" in lower || "math" in lower || "add" in lower && "multiply" in lower) {
-            inferred.add(
-                DynamicWidgetAstNode(
-                    widgetType = ComponentWidgetType.INPUT,
-                    label = "Math Expression Input",
-                    fieldSlug = "math_expr_input",
-                    byteOffsetHex = "0x00",
-                    offPayload = "0",
-                    onPayload = "25 + 75",
-                    initialValue = "25 + 75",
-                    sliderMax = 100,
-                    bgColorHex = "#FFFFFF",
-                    textColorHex = "#0F172A",
-                    soundTrigger = "SOFT_TAP",
-                    customLogicExpression = "currentExpression = inputValue != null ? inputValue.trim() : \"0\";"
+        when (appCategory) {
+            "TIMER_APP" -> {
+                inferred.add(
+                    DynamicWidgetAstNode(
+                        widgetType = ComponentWidgetType.INPUT,
+                        label = "Duration Seconds",
+                        fieldSlug = "timer_seconds_input",
+                        byteOffsetHex = "0x04",
+                        offPayload = "0",
+                        onPayload = "60",
+                        initialValue = "60",
+                        sliderMax = 300,
+                        bgColorHex = "#FFFFFF",
+                        textColorHex = "#0F172A",
+                        soundTrigger = "SOFT_TAP",
+                        customLogicExpression = "targetDurationSeconds = Integer.parseInt(inputValue);"
+                    )
                 )
-            )
-            inferred.add(
-                DynamicWidgetAstNode(
-                    widgetType = ComponentWidgetType.BUTTON,
-                    label = "Calculate Result (=)",
-                    fieldSlug = "calc_evaluate_btn",
-                    byteOffsetHex = "0x04",
-                    offPayload = "0",
-                    onPayload = "100",
-                    initialValue = "0",
-                    sliderMax = 100,
-                    bgColorHex = "#2563EB",
-                    textColorHex = "#FFFFFF",
-                    soundTrigger = "CLICK_POP",
-                    customLogicExpression = "lastComputedResult = evaluateArithmeticExpression(currentExpression);"
+                inferred.add(
+                    DynamicWidgetAstNode(
+                        widgetType = ComponentWidgetType.BUTTON,
+                        label = "Start $appName",
+                        fieldSlug = "timer_start_btn",
+                        byteOffsetHex = "0x08",
+                        offPayload = "Stopped",
+                        onPayload = "Running",
+                        initialValue = "0",
+                        sliderMax = 100,
+                        bgColorHex = "#16A34A",
+                        textColorHex = "#FFFFFF",
+                        soundTrigger = "CLICK_POP",
+                        customLogicExpression = "timerRunning = true; startTickTimestamp = System.currentTimeMillis();"
+                    )
                 )
-            )
-            inferred.add(
-                DynamicWidgetAstNode(
-                    widgetType = ComponentWidgetType.BUTTON,
-                    label = "Clear Expression (AC)",
-                    fieldSlug = "calc_clear_btn",
-                    byteOffsetHex = "0x08",
-                    offPayload = "0",
-                    onPayload = "Cleared",
-                    initialValue = "0",
-                    sliderMax = 100,
-                    bgColorHex = "#DC2626",
-                    textColorHex = "#FFFFFF",
-                    soundTrigger = "SOFT_TAP",
-                    customLogicExpression = "currentExpression = \"0\"; lastComputedResult = 0.0;"
+                inferred.add(
+                    DynamicWidgetAstNode(
+                        widgetType = ComponentWidgetType.BUTTON,
+                        label = "Pause $appName",
+                        fieldSlug = "timer_pause_btn",
+                        byteOffsetHex = "0x0C",
+                        offPayload = "Running",
+                        onPayload = "Paused",
+                        initialValue = "0",
+                        sliderMax = 100,
+                        bgColorHex = "#D97706",
+                        textColorHex = "#FFFFFF",
+                        soundTrigger = "SOFT_TAP",
+                        customLogicExpression = "timerRunning = false;"
+                    )
                 )
-            )
-        } else if ("timer" in lower || "stopwatch" in lower || "countdown" in lower || "alarm" in lower) {
-            inferred.add(
-                DynamicWidgetAstNode(
-                    widgetType = ComponentWidgetType.TOGGLE,
-                    label = "Run / Pause $appName",
-                    fieldSlug = "timer_running_toggle",
-                    byteOffsetHex = "0x00",
-                    offPayload = "Paused",
-                    onPayload = "Running",
-                    initialValue = "0",
-                    sliderMax = 100,
-                    bgColorHex = "#1E293B",
-                    textColorHex = "#4ADE80",
-                    soundTrigger = "CLICK_POP",
-                    customLogicExpression = "timerRunning = isEnabled; if (isEnabled) startTickTimestamp = System.currentTimeMillis();"
+                inferred.add(
+                    DynamicWidgetAstNode(
+                        widgetType = ComponentWidgetType.BUTTON,
+                        label = "Reset (00:00)",
+                        fieldSlug = "timer_reset_btn",
+                        byteOffsetHex = "0x10",
+                        offPayload = "0",
+                        onPayload = "Reset",
+                        initialValue = "0",
+                        sliderMax = 100,
+                        bgColorHex = "#DC2626",
+                        textColorHex = "#FFFFFF",
+                        soundTrigger = "LASER_PING",
+                        customLogicExpression = "elapsedSeconds = 0; timerRunning = false;"
+                    )
                 )
-            )
-            inferred.add(
-                DynamicWidgetAstNode(
-                    widgetType = ComponentWidgetType.SLIDER,
-                    label = "Duration Seconds",
-                    fieldSlug = "timer_duration_slider",
-                    byteOffsetHex = "0x04",
-                    offPayload = "0s",
-                    onPayload = "300s",
-                    initialValue = "60",
-                    sliderMax = 300,
-                    bgColorHex = "#0F172A",
-                    textColorHex = "#38BDF8",
-                    soundTrigger = "SOFT_TAP",
-                    customLogicExpression = "targetDurationSeconds = Math.max(1, sliderProgress);"
+            }
+
+            "NOTES_APP" -> {
+                inferred.add(
+                    DynamicWidgetAstNode(
+                        widgetType = ComponentWidgetType.INPUT,
+                        label = "Note / Task Title",
+                        fieldSlug = "note_title_input",
+                        byteOffsetHex = "0x04",
+                        offPayload = "",
+                        onPayload = "Title",
+                        initialValue = "",
+                        sliderMax = 100,
+                        bgColorHex = "#FFFFFF",
+                        textColorHex = "#0F172A",
+                        soundTrigger = "SOFT_TAP",
+                        customLogicExpression = "noteTitle = inputValue;"
+                    )
                 )
-            )
-            inferred.add(
-                DynamicWidgetAstNode(
-                    widgetType = ComponentWidgetType.BUTTON,
-                    label = "Reset $appName",
-                    fieldSlug = "timer_reset_btn",
-                    byteOffsetHex = "0x08",
-                    offPayload = "0",
-                    onPayload = "Reset",
-                    initialValue = "0",
-                    sliderMax = 100,
-                    bgColorHex = "#2563EB",
-                    textColorHex = "#FFFFFF",
-                    soundTrigger = "LASER_PING",
-                    customLogicExpression = "elapsedSeconds = 0; timerRunning = false;"
+                inferred.add(
+                    DynamicWidgetAstNode(
+                        widgetType = ComponentWidgetType.INPUT,
+                        label = "Write $appName Content",
+                        fieldSlug = "note_body_input",
+                        byteOffsetHex = "0x08",
+                        offPayload = "",
+                        onPayload = "Content",
+                        initialValue = "",
+                        sliderMax = 100,
+                        bgColorHex = "#FFFFFF",
+                        textColorHex = "#0F172A",
+                        soundTrigger = "SOFT_TAP",
+                        customLogicExpression = "noteBuffer = inputValue;"
+                    )
                 )
-            )
-        } else if ("note" in lower || "todo" in lower || "task" in lower || "diary" in lower || "clipboard" in lower) {
-            inferred.add(
-                DynamicWidgetAstNode(
-                    widgetType = ComponentWidgetType.INPUT,
-                    label = "Input $appName Text",
-                    fieldSlug = "note_text_input",
-                    byteOffsetHex = "0x00",
-                    offPayload = "",
-                    onPayload = "New Entry",
-                    initialValue = "New Entry",
-                    sliderMax = 100,
-                    bgColorHex = "#FFFFFF",
-                    textColorHex = "#0F172A",
-                    soundTrigger = "SOFT_TAP",
-                    customLogicExpression = "noteBuffer = inputValue;"
+                inferred.add(
+                    DynamicWidgetAstNode(
+                        widgetType = ComponentWidgetType.BUTTON,
+                        label = "Save $appName Item",
+                        fieldSlug = "save_note_btn",
+                        byteOffsetHex = "0x0C",
+                        offPayload = "Draft",
+                        onPayload = "Saved",
+                        initialValue = "0",
+                        sliderMax = 100,
+                        bgColorHex = "#16A34A",
+                        textColorHex = "#FFFFFF",
+                        soundTrigger = "SUCCESS_CHIME",
+                        customLogicExpression = "persistBufferToFile(noteTitle + \": \" + noteBuffer);"
+                    )
                 )
-            )
-            inferred.add(
-                DynamicWidgetAstNode(
-                    widgetType = ComponentWidgetType.TOGGLE,
-                    label = "Pin $appName Overlay",
-                    fieldSlug = "pin_note_toggle",
-                    byteOffsetHex = "0x04",
-                    offPayload = "Unpinned",
-                    onPayload = "Pinned",
-                    initialValue = "1",
-                    sliderMax = 100,
-                    bgColorHex = "#1E293B",
-                    textColorHex = "#F8FAFC",
-                    soundTrigger = "CLICK_POP",
-                    customLogicExpression = "overlayPinned = isEnabled;"
+                inferred.add(
+                    DynamicWidgetAstNode(
+                        widgetType = ComponentWidgetType.BUTTON,
+                        label = "Clear All Notes",
+                        fieldSlug = "clear_notes_btn",
+                        byteOffsetHex = "0x10",
+                        offPayload = "0",
+                        onPayload = "Cleared",
+                        initialValue = "0",
+                        sliderMax = 100,
+                        bgColorHex = "#DC2626",
+                        textColorHex = "#FFFFFF",
+                        soundTrigger = "SOFT_TAP",
+                        customLogicExpression = "noteBuffer = \"\"; clearNotesStorage();"
+                    )
                 )
-            )
-            inferred.add(
-                DynamicWidgetAstNode(
-                    widgetType = ComponentWidgetType.BUTTON,
-                    label = "Save $appName to Disk",
-                    fieldSlug = "save_note_btn",
-                    byteOffsetHex = "0x08",
-                    offPayload = "Draft",
-                    onPayload = "Saved",
-                    initialValue = "1",
-                    sliderMax = 100,
-                    bgColorHex = "#16A34A",
-                    textColorHex = "#FFFFFF",
-                    soundTrigger = "SUCCESS_CHIME",
-                    customLogicExpression = "persistBufferToFile(noteBuffer);"
+            }
+
+            "CONVERTER_APP" -> {
+                inferred.add(
+                    DynamicWidgetAstNode(
+                        widgetType = ComponentWidgetType.INPUT,
+                        label = "Input Value to Convert",
+                        fieldSlug = "convert_value_input",
+                        byteOffsetHex = "0x04",
+                        offPayload = "0",
+                        onPayload = "100",
+                        initialValue = "100",
+                        sliderMax = 100,
+                        bgColorHex = "#FFFFFF",
+                        textColorHex = "#0F172A",
+                        soundTrigger = "SOFT_TAP",
+                        customLogicExpression = "sourceValue = Double.parseDouble(inputValue);"
+                    )
                 )
-            )
-        } else if ("music" in lower || "audio" in lower || "player" in lower || "bass" in lower || "volume" in lower || "dj" in lower) {
-            inferred.add(
-                DynamicWidgetAstNode(
-                    widgetType = ComponentWidgetType.TOGGLE,
-                    label = "Audio Stream Active",
-                    fieldSlug = "audio_stream_toggle",
-                    byteOffsetHex = "0x00",
-                    offPayload = "Muted",
-                    onPayload = "Playing",
-                    initialValue = "1",
-                    sliderMax = 100,
-                    bgColorHex = "#1E293B",
-                    textColorHex = "#4ADE80",
-                    soundTrigger = "CLICK_POP",
-                    customLogicExpression = "audioActive = isEnabled;"
+                inferred.add(
+                    DynamicWidgetAstNode(
+                        widgetType = ComponentWidgetType.INPUT,
+                        label = "Conversion Multiplier / Rate",
+                        fieldSlug = "convert_rate_input",
+                        byteOffsetHex = "0x08",
+                        offPayload = "1",
+                        onPayload = "1.8",
+                        initialValue = "1.8",
+                        sliderMax = 100,
+                        bgColorHex = "#FFFFFF",
+                        textColorHex = "#0F172A",
+                        soundTrigger = "SOFT_TAP",
+                        customLogicExpression = "conversionRate = Double.parseDouble(inputValue);"
+                    )
                 )
-            )
-            inferred.add(
-                DynamicWidgetAstNode(
-                    widgetType = ComponentWidgetType.SLIDER,
-                    label = "Gain / Volume Level",
-                    fieldSlug = "audio_gain_slider",
-                    byteOffsetHex = "0x04",
-                    offPayload = "0",
-                    onPayload = "100",
-                    initialValue = "80",
-                    sliderMax = 100,
-                    bgColorHex = "#0F172A",
-                    textColorHex = "#38BDF8",
-                    soundTrigger = "SOFT_TAP",
-                    customLogicExpression = "gainPercent = sliderProgress;"
+                inferred.add(
+                    DynamicWidgetAstNode(
+                        widgetType = ComponentWidgetType.BUTTON,
+                        label = "Convert Now (=)",
+                        fieldSlug = "convert_exec_btn",
+                        byteOffsetHex = "0x0C",
+                        offPayload = "0",
+                        onPayload = "Converted",
+                        initialValue = "0",
+                        sliderMax = 100,
+                        bgColorHex = "#2563EB",
+                        textColorHex = "#FFFFFF",
+                        soundTrigger = "SUCCESS_CHIME",
+                        customLogicExpression = "convertedResult = sourceValue * conversionRate;"
+                    )
                 )
-            )
-            inferred.add(
-                DynamicWidgetAstNode(
-                    widgetType = ComponentWidgetType.BUTTON,
-                    label = "Apply Audio Profile",
-                    fieldSlug = "audio_apply_btn",
-                    byteOffsetHex = "0x08",
-                    offPayload = "Default",
-                    onPayload = "Boosted",
-                    initialValue = "0",
-                    sliderMax = 100,
-                    bgColorHex = "#2563EB",
-                    textColorHex = "#FFFFFF",
-                    soundTrigger = "SUCCESS_CHIME",
-                    customLogicExpression = "commitAudioProfile(audioActive, gainPercent);"
+                inferred.add(
+                    DynamicWidgetAstNode(
+                        widgetType = ComponentWidgetType.BUTTON,
+                        label = "Reset Converter",
+                        fieldSlug = "convert_reset_btn",
+                        byteOffsetHex = "0x10",
+                        offPayload = "0",
+                        onPayload = "Reset",
+                        initialValue = "0",
+                        sliderMax = 100,
+                        bgColorHex = "#DC2626",
+                        textColorHex = "#FFFFFF",
+                        soundTrigger = "SOFT_TAP",
+                        customLogicExpression = "sourceValue = 0.0; convertedResult = 0.0;"
+                    )
                 )
-            )
-        } else {
-            // Synthesize directly from the user's custom prompt words
-            val customLabelBase = extractCleanAppNameFromPrompt(cleanPrompt)
-            inferred.add(
-                DynamicWidgetAstNode(
-                    widgetType = ComponentWidgetType.TOGGLE,
-                    label = "$customLabelBase Toggle",
-                    fieldSlug = "custom_toggle",
-                    byteOffsetHex = "0x00",
-                    offPayload = "Off",
-                    onPayload = "On",
-                    initialValue = "0",
-                    sliderMax = 100,
-                    bgColorHex = "#1E293B",
-                    textColorHex = "#F8FAFC",
-                    soundTrigger = "CLICK_POP",
-                    customLogicExpression = "featureToggleState = isEnabled;"
+            }
+
+            "COUNTER_APP" -> {
+                inferred.add(
+                    DynamicWidgetAstNode(
+                        widgetType = ComponentWidgetType.BUTTON,
+                        label = "Increment (+1)",
+                        fieldSlug = "counter_inc_btn",
+                        byteOffsetHex = "0x04",
+                        offPayload = "0",
+                        onPayload = "+1",
+                        initialValue = "0",
+                        sliderMax = 100,
+                        bgColorHex = "#16A34A",
+                        textColorHex = "#FFFFFF",
+                        soundTrigger = "CLICK_POP",
+                        customLogicExpression = "counterValue += stepSize;"
+                    )
                 )
-            )
-            inferred.add(
-                DynamicWidgetAstNode(
-                    widgetType = ComponentWidgetType.SLIDER,
-                    label = "$customLabelBase Level",
-                    fieldSlug = "custom_level_slider",
-                    byteOffsetHex = "0x04",
-                    offPayload = "0",
-                    onPayload = "100",
-                    initialValue = "50",
-                    sliderMax = 100,
-                    bgColorHex = "#0F172A",
-                    textColorHex = "#38BDF8",
-                    soundTrigger = "SOFT_TAP",
-                    customLogicExpression = "dynamicLevelValue = sliderProgress;"
+                inferred.add(
+                    DynamicWidgetAstNode(
+                        widgetType = ComponentWidgetType.BUTTON,
+                        label = "Decrement (-1)",
+                        fieldSlug = "counter_dec_btn",
+                        byteOffsetHex = "0x08",
+                        offPayload = "0",
+                        onPayload = "-1",
+                        initialValue = "0",
+                        sliderMax = 100,
+                        bgColorHex = "#0288D1",
+                        textColorHex = "#FFFFFF",
+                        soundTrigger = "CLICK_POP",
+                        customLogicExpression = "counterValue -= stepSize;"
+                    )
                 )
-            )
-            inferred.add(
-                DynamicWidgetAstNode(
-                    widgetType = ComponentWidgetType.BUTTON,
-                    label = "Apply $customLabelBase",
-                    fieldSlug = "custom_apply_btn",
-                    byteOffsetHex = "0x08",
-                    offPayload = "Off",
-                    onPayload = "On",
-                    initialValue = "0",
-                    sliderMax = 100,
-                    bgColorHex = "#2563EB",
-                    textColorHex = "#FFFFFF",
-                    soundTrigger = "LASER_PING",
-                    customLogicExpression = "flushStateToTargetFile();"
+                inferred.add(
+                    DynamicWidgetAstNode(
+                        widgetType = ComponentWidgetType.BUTTON,
+                        label = "Reset Counter (0)",
+                        fieldSlug = "counter_reset_btn",
+                        byteOffsetHex = "0x0C",
+                        offPayload = "0",
+                        onPayload = "Reset",
+                        initialValue = "0",
+                        sliderMax = 100,
+                        bgColorHex = "#DC2626",
+                        textColorHex = "#FFFFFF",
+                        soundTrigger = "SOFT_TAP",
+                        customLogicExpression = "counterValue = 0;"
+                    )
                 )
-            )
+            }
+
+            "AUTH_APP" -> {
+                inferred.add(
+                    DynamicWidgetAstNode(
+                        widgetType = ComponentWidgetType.INPUT,
+                        label = "Username / Email",
+                        fieldSlug = "auth_user_input",
+                        byteOffsetHex = "0x04",
+                        offPayload = "",
+                        onPayload = "admin",
+                        initialValue = "",
+                        sliderMax = 100,
+                        bgColorHex = "#FFFFFF",
+                        textColorHex = "#0F172A",
+                        soundTrigger = "SOFT_TAP",
+                        customLogicExpression = "username = inputValue;"
+                    )
+                )
+                inferred.add(
+                    DynamicWidgetAstNode(
+                        widgetType = ComponentWidgetType.INPUT,
+                        label = "Password / Access Key",
+                        fieldSlug = "auth_pass_input",
+                        byteOffsetHex = "0x08",
+                        offPayload = "",
+                        onPayload = "******",
+                        initialValue = "",
+                        sliderMax = 100,
+                        bgColorHex = "#FFFFFF",
+                        textColorHex = "#0F172A",
+                        soundTrigger = "SOFT_TAP",
+                        customLogicExpression = "passwordKey = inputValue;"
+                    )
+                )
+                inferred.add(
+                    DynamicWidgetAstNode(
+                        widgetType = ComponentWidgetType.BUTTON,
+                        label = "Authenticate / Verify",
+                        fieldSlug = "auth_submit_btn",
+                        byteOffsetHex = "0x0C",
+                        offPayload = "Pending",
+                        onPayload = "Verified",
+                        initialValue = "0",
+                        sliderMax = 100,
+                        bgColorHex = "#2563EB",
+                        textColorHex = "#FFFFFF",
+                        soundTrigger = "SUCCESS_CHIME",
+                        customLogicExpression = "verifyCredentials(username, passwordKey);"
+                    )
+                )
+            }
+
+            "MUSIC_APP" -> {
+                inferred.add(
+                    DynamicWidgetAstNode(
+                        widgetType = ComponentWidgetType.SLIDER,
+                        label = "Master Volume / Gain",
+                        fieldSlug = "audio_gain_slider",
+                        byteOffsetHex = "0x04",
+                        offPayload = "0",
+                        onPayload = "100",
+                        initialValue = "80",
+                        sliderMax = 100,
+                        bgColorHex = "#0F172A",
+                        textColorHex = "#38BDF8",
+                        soundTrigger = "SOFT_TAP",
+                        customLogicExpression = "gainPercent = sliderProgress;"
+                    )
+                )
+                inferred.add(
+                    DynamicWidgetAstNode(
+                        widgetType = ComponentWidgetType.BUTTON,
+                        label = "Play / Pause Track",
+                        fieldSlug = "audio_play_btn",
+                        byteOffsetHex = "0x08",
+                        offPayload = "Paused",
+                        onPayload = "Playing",
+                        initialValue = "0",
+                        sliderMax = 100,
+                        bgColorHex = "#16A34A",
+                        textColorHex = "#FFFFFF",
+                        soundTrigger = "CLICK_POP",
+                        customLogicExpression = "toggleAudioPlayback();"
+                    )
+                )
+                inferred.add(
+                    DynamicWidgetAstNode(
+                        widgetType = ComponentWidgetType.BUTTON,
+                        label = "Next Track / Apply EQ",
+                        fieldSlug = "audio_next_btn",
+                        byteOffsetHex = "0x0C",
+                        offPayload = "Default",
+                        onPayload = "Boosted",
+                        initialValue = "0",
+                        sliderMax = 100,
+                        bgColorHex = "#2563EB",
+                        textColorHex = "#FFFFFF",
+                        soundTrigger = "SUCCESS_CHIME",
+                        customLogicExpression = "commitAudioProfile(gainPercent);"
+                    )
+                )
+            }
+
+            "FLOATING_OVERLAY_APP" -> {
+                val customLabelBase = extractCleanAppNameFromPrompt(cleanPrompt)
+                inferred.add(
+                    DynamicWidgetAstNode(
+                        widgetType = ComponentWidgetType.TOGGLE,
+                        label = "$customLabelBase Switch",
+                        fieldSlug = "overlay_toggle",
+                        byteOffsetHex = "0x04",
+                        offPayload = "Off",
+                        onPayload = "On",
+                        initialValue = "0",
+                        sliderMax = 100,
+                        bgColorHex = "#1E293B",
+                        textColorHex = "#F8FAFC",
+                        soundTrigger = "CLICK_POP",
+                        customLogicExpression = "featureToggleState = isEnabled;"
+                    )
+                )
+                inferred.add(
+                    DynamicWidgetAstNode(
+                        widgetType = ComponentWidgetType.SLIDER,
+                        label = "$customLabelBase Level",
+                        fieldSlug = "overlay_slider",
+                        byteOffsetHex = "0x08",
+                        offPayload = "0",
+                        onPayload = "100",
+                        initialValue = "50",
+                        sliderMax = 100,
+                        bgColorHex = "#0F172A",
+                        textColorHex = "#38BDF8",
+                        soundTrigger = "SOFT_TAP",
+                        customLogicExpression = "dynamicLevelValue = sliderProgress;"
+                    )
+                )
+                inferred.add(
+                    DynamicWidgetAstNode(
+                        widgetType = ComponentWidgetType.BUTTON,
+                        label = "Apply $customLabelBase",
+                        fieldSlug = "overlay_apply_btn",
+                        byteOffsetHex = "0x0C",
+                        offPayload = "Off",
+                        onPayload = "On",
+                        initialValue = "0",
+                        sliderMax = 100,
+                        bgColorHex = "#2563EB",
+                        textColorHex = "#FFFFFF",
+                        soundTrigger = "LASER_PING",
+                        customLogicExpression = "flushStateToTargetFile();"
+                    )
+                )
+            }
+
+            else -> {
+                val customLabelBase = extractCleanAppNameFromPrompt(cleanPrompt)
+                inferred.add(
+                    DynamicWidgetAstNode(
+                        widgetType = ComponentWidgetType.INPUT,
+                        label = "$customLabelBase Input",
+                        fieldSlug = "standalone_input",
+                        byteOffsetHex = "0x04",
+                        offPayload = "",
+                        onPayload = "Input",
+                        initialValue = "",
+                        sliderMax = 100,
+                        bgColorHex = "#FFFFFF",
+                        textColorHex = "#0F172A",
+                        soundTrigger = "SOFT_TAP",
+                        customLogicExpression = "currentInput = inputValue;"
+                    )
+                )
+                inferred.add(
+                    DynamicWidgetAstNode(
+                        widgetType = ComponentWidgetType.BUTTON,
+                        label = "Run $customLabelBase",
+                        fieldSlug = "standalone_run_btn",
+                        byteOffsetHex = "0x08",
+                        offPayload = "Idle",
+                        onPayload = "Executed",
+                        initialValue = "0",
+                        sliderMax = 100,
+                        bgColorHex = "#2563EB",
+                        textColorHex = "#FFFFFF",
+                        soundTrigger = "SUCCESS_CHIME",
+                        customLogicExpression = "executeStandaloneFeature(currentInput);"
+                    )
+                )
+                inferred.add(
+                    DynamicWidgetAstNode(
+                        widgetType = ComponentWidgetType.BUTTON,
+                        label = "Reset $customLabelBase",
+                        fieldSlug = "standalone_reset_btn",
+                        byteOffsetHex = "0x0C",
+                        offPayload = "0",
+                        onPayload = "Reset",
+                        initialValue = "0",
+                        sliderMax = 100,
+                        bgColorHex = "#DC2626",
+                        textColorHex = "#FFFFFF",
+                        soundTrigger = "SOFT_TAP",
+                        customLogicExpression = "resetStandaloneState();"
+                    )
+                )
+            }
         }
 
         return inferred
@@ -1220,39 +1952,51 @@ object GgufBlueprintEngine {
         astNodes: List<DynamicWidgetAstNode>,
         projectId: Long,
         overlayTitle: String,
-        targetFilePath: String
+        targetFilePath: String,
+        isFloating: Boolean,
+        appCategory: String
     ): List<CanvasComponentEntity> {
         val widgets = mutableListOf<CanvasComponentEntity>()
         var currentY = 12
         var nextId = 1L
 
-        // Header widget
+        val initialHeaderLabel = when {
+            appCategory == "CALCULATOR_APP" -> "0"
+            appCategory == "TIMER_APP" -> "00:00.00"
+            appCategory == "COUNTER_APP" -> "Count: 0"
+            appCategory == "CONVERTER_APP" -> "Result: 0.00"
+            isFloating -> "⚡ $overlayTitle"
+            else -> "$overlayTitle — Ready"
+        }
+        val headerOnPayload = if (appCategory == "CALCULATOR_APP") "CALC_DISPLAY" else "DISPLAY_HEADER"
+
+        // Header / Primary Display widget
         widgets.add(
             CanvasComponentEntity(
                 id = nextId++,
                 projectId = projectId,
                 type = ComponentWidgetType.TEXT.name,
-                label = "⚡ $overlayTitle",
+                label = initialHeaderLabel,
                 posXDp = 14,
                 posYDp = currentY,
                 widthDp = 230,
-                heightDp = 34,
+                heightDp = if (appCategory == "CALCULATOR_APP") 48 else 36,
                 bgColorHex = "#0F172A",
                 textColorHex = "#38BDF8",
                 targetFilePath = targetFilePath,
                 byteOffsetHex = "0x00",
-                offPayloadHex = "Off",
-                onPayloadHex = "On",
-                currentValue = "1"
+                offPayloadHex = "0",
+                onPayloadHex = headerOnPayload,
+                currentValue = "0"
             )
         )
-        currentY += 42
+        currentY += if (appCategory == "CALCULATOR_APP") 56 else 44
 
         for (node in astNodes) {
             val h = when (node.widgetType) {
                 ComponentWidgetType.SLIDER -> 52
                 ComponentWidgetType.INPUT -> 48
-                else -> 46
+                else -> 44
             }
             widgets.add(
                 CanvasComponentEntity(
@@ -1282,8 +2026,8 @@ object GgufBlueprintEngine {
     }
 
     /**
-     * Dynamically writes complete, functional Android/Kotlin/Java/XML files from scratch
-     * tailored to the user's parsed widgets, state variables, and target file path.
+     * Dynamically writes complete, functional Android/Kotlin/Java/XML/Gradle files from scratch
+     * tailored to the user's parsed widgets, state variables, app category, and target file path.
      */
     private fun writeScratchAndroidCodeFromAst(
         appName: String,
@@ -1292,11 +2036,14 @@ object GgufBlueprintEngine {
         targetFilePath: String,
         prompt: String,
         modelSourceTag: String,
-        components: List<CanvasComponentEntity>
+        components: List<CanvasComponentEntity>,
+        isFloating: Boolean = false,
+        appCategory: String = "STANDALONE_ANDROID_APP"
     ): Map<String, String> {
         val files = LinkedHashMap<String, String>()
         val pkgPath = packageName.replace('.', '/')
         val interactiveWidgets = components.filter { it.type != ComponentWidgetType.TEXT.name }
+        val safeApkSlug = appName.lowercase(Locale.US).replace(Regex("[^a-z0-9]+"), "_").trim('_').ifEmpty { "ai_app" }
 
         // 1. AndroidManifest.xml written from scratch
         val manifestXml = buildString {
@@ -1304,8 +2051,10 @@ object GgufBlueprintEngine {
             appendLine("""<manifest xmlns:android="http://schemas.android.com/apk/res/android"""")
             appendLine("""    package="$packageName">""")
             appendLine()
-            appendLine("""    <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />""")
-            appendLine("""    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />""")
+            if (isFloating) {
+                appendLine("""    <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />""")
+                appendLine("""    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />""")
+            }
             appendLine("""    <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" />""")
             appendLine("""    <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" />""")
             appendLine()
@@ -1330,7 +2079,293 @@ object GgufBlueprintEngine {
         }
         files["AndroidManifest.xml"] = manifestXml
 
-        // 2. Kotlin Service written from scratch: AiDynamicOverlayService.kt
+        // 2. build.gradle.kts written from scratch
+        val gradleConfig = buildString {
+            appendLine("plugins {")
+            appendLine("    id(\"com.android.application\")")
+            appendLine("    id(\"org.jetbrains.kotlin.android\")")
+            appendLine("}")
+            appendLine()
+            appendLine("android {")
+            appendLine("    namespace = \"$packageName\"")
+            appendLine("    compileSdk = 34")
+            appendLine()
+            appendLine("    defaultConfig {")
+            appendLine("        applicationId = \"$packageName\"")
+            appendLine("        minSdk = 26")
+            appendLine("        targetSdk = 34")
+            appendLine("        versionCode = 1")
+            appendLine("        versionName = \"1.0.0\"")
+            appendLine("        setProperty(\"archivesBaseName\", \"$safeApkSlug\")")
+            appendLine("    }")
+            appendLine("}")
+        }
+        files["build.gradle.kts"] = gradleConfig
+
+        // 3. res/values/strings.xml written from scratch
+        val stringsXml = buildString {
+            appendLine("""<?xml version="1.0" encoding="utf-8"?>""")
+            appendLine("""<resources>""")
+            appendLine("""    <string name="app_name">${escapeXml(appName)}</string>""")
+            appendLine("""    <string name="package_name">${escapeXml(packageName)}</string>""")
+            appendLine("""    <string name="apk_file_name">${escapeXml(safeApkSlug)}.apk</string>""")
+            appendLine("""    <string name="header_title">${escapeXml(overlayTitle)}</string>""")
+            interactiveWidgets.forEachIndexed { idx, comp ->
+                val slug = toValidIdentifier(comp.label, idx + 1)
+                appendLine("""    <string name="label_$slug">${escapeXml(comp.label)}</string>""")
+            }
+            appendLine("""</resources>""")
+        }
+        files["src/main/res/values/strings.xml"] = stringsXml
+
+        // 4. res/layout/activity_main.xml written from scratch
+        val layoutXml = buildString {
+            appendLine("""<?xml version="1.0" encoding="utf-8"?>""")
+            appendLine("""<ScrollView xmlns:android="http://schemas.android.com/apk/res/android"""")
+            appendLine("""    android:layout_width="match_parent"""")
+            appendLine("""    android:layout_height="match_parent"""")
+            appendLine("""    android:background="#0F172A">""")
+            appendLine()
+            appendLine("""    <LinearLayout""")
+            appendLine("""        android:id="@+id/root_container"""")
+            appendLine("""        android:layout_width="match_parent"""")
+            appendLine("""        android:layout_height="wrap_content"""")
+            appendLine("""        android:orientation="vertical"""")
+            appendLine("""        android:padding="20dp">""")
+            appendLine()
+            appendLine("""        <TextView""")
+            appendLine("""            android:id="@+id/primary_display_text"""")
+            appendLine("""            android:layout_width="match_parent"""")
+            appendLine("""            android:layout_height="wrap_content"""")
+            appendLine("""            android:background="#1E293B"""")
+            appendLine("""            android:padding="16dp"""")
+            appendLine("""            android:text="${escapeXml(components.firstOrNull()?.label ?: overlayTitle)}"""")
+            appendLine("""            android:textColor="#38BDF8"""")
+            appendLine("""            android:textSize="20sp" />""")
+            interactiveWidgets.forEachIndexed { idx, comp ->
+                val slug = toValidIdentifier(comp.label, idx + 1)
+                appendLine()
+                when (comp.type) {
+                    ComponentWidgetType.INPUT.name -> {
+                        appendLine("""        <EditText""")
+                        appendLine("""            android:id="@+id/input_$slug"""")
+                        appendLine("""            android:layout_width="match_parent"""")
+                        appendLine("""            android:layout_height="wrap_content"""")
+                        appendLine("""            android:hint="${escapeXml(comp.label)}"""")
+                        appendLine("""            android:textColor="${comp.textColorHex}"""")
+                        appendLine("""            android:background="${comp.bgColorHex}"""")
+                        appendLine("""            android:padding="12dp" />""")
+                    }
+                    ComponentWidgetType.SLIDER.name -> {
+                        appendLine("""        <SeekBar""")
+                        appendLine("""            android:id="@+id/slider_$slug"""")
+                        appendLine("""            android:layout_width="match_parent"""")
+                        appendLine("""            android:layout_height="wrap_content"""")
+                        appendLine("""            android:max="${comp.sliderMax.coerceAtLeast(1)}" />""")
+                    }
+                    ComponentWidgetType.TOGGLE.name -> {
+                        appendLine("""        <Switch""")
+                        appendLine("""            android:id="@+id/switch_$slug"""")
+                        appendLine("""            android:layout_width="match_parent"""")
+                        appendLine("""            android:layout_height="wrap_content"""")
+                        appendLine("""            android:text="${escapeXml(comp.label)}"""")
+                        appendLine("""            android:textColor="${comp.textColorHex}" />""")
+                    }
+                    else -> {
+                        appendLine("""        <Button""")
+                        appendLine("""            android:id="@+id/btn_$slug"""")
+                        appendLine("""            android:layout_width="match_parent"""")
+                        appendLine("""            android:layout_height="wrap_content"""")
+                        appendLine("""            android:text="${escapeXml(comp.label)}"""")
+                        appendLine("""            android:backgroundTint="${comp.bgColorHex}"""")
+                        appendLine("""            android:textColor="${comp.textColorHex}" />""")
+                    }
+                }
+            }
+            appendLine("""    </LinearLayout>""")
+            appendLine("""</ScrollView>""")
+        }
+        files["src/main/res/layout/activity_main.xml"] = layoutXml
+
+        // 5. MainActivity.kt written from scratch (Standalone Android UI + optional Floating Service launcher)
+        val mainActivityKotlin = buildString {
+            appendLine("package $packageName")
+            appendLine()
+            appendLine("import android.app.Activity")
+            appendLine("import android.content.Intent")
+            appendLine("import android.graphics.Color")
+            appendLine("import android.net.Uri")
+            appendLine("import android.os.Bundle")
+            appendLine("import android.provider.Settings")
+            appendLine("import android.widget.Button")
+            appendLine("import android.widget.EditText")
+            appendLine("import android.widget.LinearLayout")
+            appendLine("import android.widget.ScrollView")
+            appendLine("import android.widget.SeekBar")
+            appendLine("import android.widget.Switch")
+            appendLine("import android.widget.TextView")
+            appendLine("import java.io.File")
+            appendLine()
+            appendLine("/**")
+            appendLine(" * Standalone Android Activity written from scratch by $modelSourceTag")
+            appendLine(" * Mode: $appCategory | Floating Overlay: $isFloating")
+            appendLine(" * Prompt: \"${prompt.replace("\n", " ")}\"")
+            appendLine(" */")
+            appendLine("class MainActivity : Activity() {")
+            appendLine()
+            appendLine("    private lateinit var logicEngine: AiScratchLogicEngine")
+            appendLine("    private lateinit var primaryDisplay: TextView")
+            appendLine("    private var currentExpression: String = \"\"")
+            appendLine("    private val targetPath: String = \"${escapeCodeString(targetFilePath)}\"")
+            appendLine()
+            interactiveWidgets.forEachIndexed { idx, comp ->
+                val varSlug = toValidIdentifier(comp.label, idx + 1)
+                when (comp.type) {
+                    ComponentWidgetType.TOGGLE.name -> {
+                        val initBool = comp.currentValue == "1" || comp.currentValue.equals("true", ignoreCase = true)
+                        appendLine("    private var stateToggle_$varSlug: Boolean = $initBool")
+                    }
+                    ComponentWidgetType.SLIDER.name -> {
+                        val initInt = comp.currentValue.toIntOrNull() ?: 50
+                        appendLine("    private var stateSlider_$varSlug: Int = $initInt")
+                    }
+                    ComponentWidgetType.INPUT.name -> {
+                        appendLine("    private var stateInput_$varSlug: String = \"${escapeCodeString(comp.currentValue)}\"")
+                    }
+                    else -> {
+                        appendLine("    private var actionCount_$varSlug: Int = 0")
+                    }
+                }
+            }
+            appendLine()
+            appendLine("    override fun onCreate(savedInstanceState: Bundle?) {")
+            appendLine("        super.onCreate(savedInstanceState)")
+            appendLine("        logicEngine = AiScratchLogicEngine(File(filesDir, \"ai_runtime_state.bin\"), targetPath)")
+            appendLine()
+            appendLine("        val scrollRoot = ScrollView(this).apply {")
+            appendLine("            setBackgroundColor(Color.parseColor(\"#0F172A\"))")
+            appendLine("        }")
+            appendLine("        val root = LinearLayout(this).apply {")
+            appendLine("            orientation = LinearLayout.VERTICAL")
+            appendLine("            setPadding(40, 48, 40, 48)")
+            appendLine("        }")
+            appendLine()
+            appendLine("        primaryDisplay = TextView(this).apply {")
+            appendLine("            text = \"${escapeCodeString(components.firstOrNull()?.label ?: overlayTitle)}\"")
+            appendLine("            textSize = 22f")
+            appendLine("            setPadding(24, 24, 24, 24)")
+            appendLine("            setBackgroundColor(Color.parseColor(\"#1E293B\"))")
+            appendLine("            setTextColor(Color.parseColor(\"#38BDF8\"))")
+            appendLine("        }")
+            appendLine("        root.addView(primaryDisplay)")
+            appendLine()
+            interactiveWidgets.forEachIndexed { idx, comp ->
+                val varSlug = toValidIdentifier(comp.label, idx + 1)
+                val safeLabel = escapeCodeString(comp.label)
+                val safeOffset = escapeCodeString(comp.byteOffsetHex)
+                val safeOff = escapeCodeString(comp.offPayloadHex)
+                val safeOn = escapeCodeString(comp.onPayloadHex)
+                when (comp.type) {
+                    ComponentWidgetType.INPUT.name -> {
+                        appendLine("        val input_$varSlug = EditText(this).apply {")
+                        appendLine("            hint = \"$safeLabel\"")
+                        appendLine("            setText(stateInput_$varSlug)")
+                        appendLine("            setTextColor(Color.parseColor(\"${comp.textColorHex}\"))")
+                        appendLine("            setBackgroundColor(Color.parseColor(\"${comp.bgColorHex}\"))")
+                        appendLine("        }")
+                        appendLine("        root.addView(input_$varSlug)")
+                    }
+                    ComponentWidgetType.SLIDER.name -> {
+                        appendLine("        val seekLabel_$varSlug = TextView(this).apply {")
+                        appendLine("            text = \"$safeLabel: \" + stateSlider_$varSlug")
+                        appendLine("            setTextColor(Color.parseColor(\"${comp.textColorHex}\"))")
+                        appendLine("        }")
+                        appendLine("        val seekBar_$varSlug = SeekBar(this).apply {")
+                        appendLine("            max = ${comp.sliderMax.coerceAtLeast(1)}")
+                        appendLine("            progress = stateSlider_$varSlug")
+                        appendLine("            setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {")
+                        appendLine("                override fun onProgressChanged(sb: SeekBar?, value: Int, fromUser: Boolean) {")
+                        appendLine("                    stateSlider_$varSlug = value")
+                        appendLine("                    seekLabel_$varSlug.text = \"$safeLabel: \" + value")
+                        appendLine("                    primaryDisplay.text = \"$safeLabel = \" + value")
+                        appendLine("                    logicEngine.applyDynamicSliderValue(\"$safeOffset\", value, ${comp.sliderMax.coerceAtLeast(1)})")
+                        appendLine("                }")
+                        appendLine("                override fun onStartTrackingTouch(sb: SeekBar?) {}")
+                        appendLine("                override fun onStopTrackingTouch(sb: SeekBar?) {}")
+                        appendLine("            })")
+                        appendLine("        }")
+                        appendLine("        root.addView(seekLabel_$varSlug)")
+                        appendLine("        root.addView(seekBar_$varSlug)")
+                    }
+                    ComponentWidgetType.TOGGLE.name -> {
+                        appendLine("        val switch_$varSlug = Switch(this).apply {")
+                        appendLine("            text = \"$safeLabel\"")
+                        appendLine("            isChecked = stateToggle_$varSlug")
+                        appendLine("            setTextColor(Color.parseColor(\"${comp.textColorHex}\"))")
+                        appendLine("            setOnCheckedChangeListener { _, isChecked ->")
+                        appendLine("                stateToggle_$varSlug = isChecked")
+                        appendLine("                val payload = if (isChecked) \"$safeOn\" else \"$safeOff\"")
+                        appendLine("                primaryDisplay.text = \"$safeLabel: \" + payload")
+                        appendLine("                logicEngine.applyDynamicPatch(\"$safeOffset\", \"$safeOff\", \"$safeOn\", payload, isChecked)")
+                        appendLine("            }")
+                        appendLine("        }")
+                        appendLine("        root.addView(switch_$varSlug)")
+                    }
+                    else -> {
+                        appendLine("        val btn_$varSlug = Button(this).apply {")
+                        appendLine("            text = \"$safeLabel\"")
+                        appendLine("            setBackgroundColor(Color.parseColor(\"${comp.bgColorHex}\"))")
+                        appendLine("            setTextColor(Color.parseColor(\"${comp.textColorHex}\"))")
+                        appendLine("            setOnClickListener {")
+                        appendLine("                actionCount_$varSlug++")
+                        appendLine("                val token = \"$safeOn\"")
+                        appendLine("                when {")
+                        appendLine("                    token == \"C\" || token.equals(\"Clear\", ignoreCase = true) || token.equals(\"Reset\", ignoreCase = true) -> {")
+                        appendLine("                        currentExpression = \"\"")
+                        appendLine("                        primaryDisplay.text = \"0\"")
+                        appendLine("                    }")
+                        appendLine("                    token == \"=\" -> {")
+                        appendLine("                        val result = logicEngine.evaluateMathExpression(currentExpression)")
+                        appendLine("                        primaryDisplay.text = result")
+                        appendLine("                        currentExpression = result")
+                        appendLine("                    }")
+                        appendLine("                    token in listOf(\"0\",\"1\",\"2\",\"3\",\"4\",\"5\",\"6\",\"7\",\"8\",\"9\",\"+\",\"-\",\"*\",\"/\",\".\") -> {")
+                        appendLine("                        currentExpression += token")
+                        appendLine("                        primaryDisplay.text = currentExpression")
+                        appendLine("                    }")
+                        appendLine("                    else -> {")
+                        appendLine("                        primaryDisplay.text = \"$safeLabel → \" + token")
+                        appendLine("                    }")
+                        appendLine("                }")
+                        appendLine("                logicEngine.executeDynamicAction(\"$varSlug\", \"$safeOffset\", token, actionCount_$varSlug)")
+                        appendLine("            }")
+                        appendLine("        }")
+                        appendLine("        root.addView(btn_$varSlug)")
+                    }
+                }
+                appendLine()
+            }
+            if (isFloating) {
+                appendLine("        val launchOverlayBtn = Button(this).apply {")
+                appendLine("            text = \"Launch Floating ${escapeCodeString(overlayTitle)}\"")
+                appendLine("            setOnClickListener {")
+                appendLine("                if (!Settings.canDrawOverlays(this@MainActivity)) {")
+                appendLine("                    startActivity(Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse(\"package:\$packageName\")))")
+                appendLine("                } else {")
+                appendLine("                    startService(Intent(this@MainActivity, AiDynamicOverlayService::class.java))")
+                appendLine("                }")
+                appendLine("            }")
+                appendLine("        }")
+                appendLine("        root.addView(launchOverlayBtn)")
+            }
+            appendLine("        scrollRoot.addView(root)")
+            appendLine("        setContentView(scrollRoot)")
+            appendLine("    }")
+            appendLine("}")
+        }
+        files["src/main/java/$pkgPath/MainActivity.kt"] = mainActivityKotlin
+
+        // 6. Kotlin Service written from scratch: AiDynamicOverlayService.kt
         val kotlinServiceCode = buildString {
             appendLine("package $packageName")
             appendLine()
@@ -1363,7 +2398,6 @@ object GgufBlueprintEngine {
             appendLine("    private lateinit var logicEngine: AiScratchLogicEngine")
             appendLine("    private val targetPath: String = \"${escapeCodeString(targetFilePath)}\"")
             appendLine()
-            // Dynamic state variables for every widget in AST
             interactiveWidgets.forEachIndexed { idx, comp ->
                 val varSlug = toValidIdentifier(comp.label, idx + 1)
                 when (comp.type) {
@@ -1528,7 +2562,7 @@ object GgufBlueprintEngine {
         }
         files["src/main/java/$pkgPath/AiDynamicOverlayService.kt"] = kotlinServiceCode
 
-        // 3. Java Logic & Patching Engine written from scratch: AiScratchLogicEngine.java
+        // 7. Java Logic & Math/Patching Engine written from scratch: AiScratchLogicEngine.java
         val javaLogicCode = buildString {
             appendLine("package $packageName;")
             appendLine()
@@ -1541,7 +2575,7 @@ object GgufBlueprintEngine {
             appendLine()
             appendLine("/**")
             appendLine(" * Scratch-generated Java Runtime Engine for $appName.")
-            appendLine(" * Handles binary offset patching, text token replacement, and dynamic expressions.")
+            appendLine(" * Handles arithmetic expression evaluation, binary offset patching, and state persistence.")
             appendLine(" */")
             appendLine("public final class AiScratchLogicEngine {")
             appendLine("    private final File fallbackStateFile;")
@@ -1551,6 +2585,36 @@ object GgufBlueprintEngine {
             appendLine("    public AiScratchLogicEngine(File fallbackStateFile, String configuredTargetFilePath) {")
             appendLine("        this.fallbackStateFile = fallbackStateFile;")
             appendLine("        this.configuredTargetFilePath = configuredTargetFilePath;")
+            appendLine("    }")
+            appendLine()
+            appendLine("    public synchronized String evaluateMathExpression(String rawExpr) {")
+            appendLine("        if (rawExpr == null || rawExpr.trim().isEmpty()) return \"0\";")
+            appendLine("        try {")
+            appendLine("            String clean = rawExpr.replaceAll(\"[^0-9.+\\\\-*/]\", \"\");")
+            appendLine("            if (clean.isEmpty()) return \"0\";")
+            appendLine("            double result = 0.0;")
+            appendLine("            char op = '+';")
+            appendLine("            StringBuilder token = new StringBuilder();")
+            appendLine("            for (int i = 0; i <= clean.length(); i++) {")
+            appendLine("                char c = (i < clean.length()) ? clean.charAt(i) : '+';")
+            appendLine("                if ((c >= '0' && c <= '9') || c == '.') {")
+            appendLine("                    token.append(c);")
+            appendLine("                } else if (token.length() > 0) {")
+            appendLine("                    double val = Double.parseDouble(token.toString());")
+            appendLine("                    if (op == '+') result += val;")
+            appendLine("                    else if (op == '-') result -= val;")
+            appendLine("                    else if (op == '*') result *= val;")
+            appendLine("                    else if (op == '/') result = (val != 0.0) ? (result / val) : 0.0;")
+            appendLine("                    op = c;")
+            appendLine("                    token.setLength(0);")
+            appendLine("                }")
+            appendLine("            }")
+            appendLine("            String formatted = (result == Math.floor(result)) ? String.valueOf((long) result) : String.valueOf(result);")
+            appendLine("            applyDynamicPatch(\"0x00\", \"0\", formatted, formatted, true);")
+            appendLine("            return formatted;")
+            appendLine("        } catch (Exception e) {")
+            appendLine("            return \"0\";")
+            appendLine("        }")
             appendLine("    }")
             appendLine()
             appendLine("    public synchronized boolean applyDynamicPatch(String offsetHex, String offToken, String onToken, String activePayload, boolean isEnabled) {")
@@ -1631,48 +2695,6 @@ object GgufBlueprintEngine {
             appendLine("}")
         }
         files["src/main/java/$pkgPath/AiScratchLogicEngine.java"] = javaLogicCode
-
-        // 4. MainActivity.kt written from scratch
-        val mainActivityKotlin = buildString {
-            appendLine("package $packageName")
-            appendLine()
-            appendLine("import android.app.Activity")
-            appendLine("import android.content.Intent")
-            appendLine("import android.net.Uri")
-            appendLine("import android.os.Bundle")
-            appendLine("import android.provider.Settings")
-            appendLine("import android.widget.Button")
-            appendLine("import android.widget.LinearLayout")
-            appendLine("import android.widget.TextView")
-            appendLine()
-            appendLine("class MainActivity : Activity() {")
-            appendLine("    override fun onCreate(savedInstanceState: Bundle?) {")
-            appendLine("        super.onCreate(savedInstanceState)")
-            appendLine("        val root = LinearLayout(this).apply {")
-            appendLine("            orientation = LinearLayout.VERTICAL")
-            appendLine("            setPadding(48, 64, 48, 64)")
-            appendLine("        }")
-            appendLine("        val title = TextView(this).apply {")
-            appendLine("            text = \"${escapeCodeString(appName)}\"")
-            appendLine("            textSize = 20f")
-            appendLine("        }")
-            appendLine("        val launchBtn = Button(this).apply {")
-            appendLine("            text = \"Start ${escapeCodeString(overlayTitle)}\"")
-            appendLine("            setOnClickListener {")
-            appendLine("                if (!Settings.canDrawOverlays(this@MainActivity)) {")
-            appendLine("                    startActivity(Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse(\"package:\$packageName\")))")
-            appendLine("                } else {")
-            appendLine("                    startService(Intent(this@MainActivity, AiDynamicOverlayService::class.java))")
-            appendLine("                }")
-            appendLine("            }")
-            appendLine("        }")
-            appendLine("        root.addView(title)")
-            appendLine("        root.addView(launchBtn)")
-            appendLine("        setContentView(root)")
-            appendLine("    }")
-            appendLine("}")
-        }
-        files["src/main/java/$pkgPath/MainActivity.kt"] = mainActivityKotlin
 
         return files
     }
@@ -2024,13 +3046,14 @@ object GgufBlueprintEngine {
         val stopWords = setOf(
             "create", "make", "build", "generate", "write", "code", "ek", "app", "banao", "bana", "do", "de",
             "for", "with", "and", "aur", "jisme", "mein", "me", "ka", "ki", "ke", "ko",
-            "floating", "window", "panel", "menu", "please", "mujhe", "chahiye", "a", "an", "the"
+            "floating", "window", "panel", "menu", "please", "mujhe", "chahiye", "a", "an", "the",
+            "apk", "aab", "install", "installer", "standalone", "android"
         )
         val words = cleanPrompt.split(Regex("\\s+"))
             .map { it.replace(Regex("[^a-zA-Z0-9]"), "") }
             .filter { it.length >= 2 && !it.startsWith("/") && it.lowercase(Locale.US) !in stopWords }
             .take(3)
-        if (words.isEmpty()) return "Custom Scratch App"
+        if (words.isEmpty()) return "Custom Android App"
         return words.joinToString(" ") { w ->
             w.replaceFirstChar { if (it.isLowerCase()) it.titlecase(Locale.US) else it.toString() }
         }

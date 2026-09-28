@@ -149,4 +149,21 @@ class ExampleUnitTest {
         premiumVideosDir.delete()
         tempRoot.delete()
     }
+
+    @Test
+    fun ggufBlueprintEngine_answersMathQuestionsDirectlyWithoutTriggeringBuild() {
+        val eval = GgufBlueprintEngine.evaluateUserPrompt("what is 900 + 727288")
+        assertTrue("Math query must not trigger an app build", !eval.shouldBuildOrUpdateApp)
+        assertTrue(
+            "Bot reply must contain the exact sum 728188, got: ${eval.conversationalReply}",
+            eval.conversationalReply.contains("728188")
+        )
+
+        val hindiMathEval = GgufBlueprintEngine.evaluateUserPrompt("900 + 727288 kitna hota hai")
+        assertTrue("Hindi math query must not trigger an app build", !hindiMathEval.shouldBuildOrUpdateApp)
+        assertTrue(
+            "Hindi math reply must contain 728188, got: ${hindiMathEval.conversationalReply}",
+            hindiMathEval.conversationalReply.contains("728188")
+        )
+    }
 }
