@@ -105,6 +105,7 @@ fun PropertyInspectorBottomDock(
     onToggleAutoFixSize: () -> Unit = {},
     onOpenEditCode: () -> Unit = {},
     onUpdateComponent: (CanvasComponentEntity) -> Unit,
+    onSaveDesign: (CanvasComponentEntity) -> Unit = { onUpdateComponent(it) },
     onPickImageUri: (android.net.Uri) -> Unit,
     onPickSoundUri: (android.net.Uri, Boolean) -> Unit = { _, _ -> },
     onDuplicateComponent: () -> Unit,
@@ -115,34 +116,53 @@ fun PropertyInspectorBottomDock(
 ) {
     val context = LocalContext.current
     var selectedTab by remember { mutableIntStateOf(0) }
-    var sketchCategoryTab by remember { mutableIntStateOf(0) } // 0 = Basic, 1 = Recent, 2 = Event
 
-    var labelText by remember(component.id, component.label) { mutableStateOf(component.label) }
-    var widthInput by remember(component.id, component.widthDp) { mutableStateOf(component.widthDp.toString()) }
-    var heightInput by remember(component.id, component.heightDp) { mutableStateOf(component.heightDp.toString()) }
-    var posXInput by remember(component.id, component.posXDp) { mutableStateOf(component.posXDp.toString()) }
-    var posYInput by remember(component.id, component.posYDp) { mutableStateOf(component.posYDp.toString()) }
+    var currentType by remember(component.id) { mutableStateOf(component.type) }
+    var labelText by remember(component.id) { mutableStateOf(component.label) }
+    var widthInput by remember(component.id) { mutableStateOf(component.widthDp.toString()) }
+    var heightInput by remember(component.id) { mutableStateOf(component.heightDp.toString()) }
+    var posXInput by remember(component.id) { mutableStateOf(component.posXDp.toString()) }
+    var posYInput by remember(component.id) { mutableStateOf(component.posYDp.toString()) }
 
-    var bgColorInput by remember(component.id, component.bgColorHex) { mutableStateOf(component.bgColorHex) }
-    var textColorInput by remember(component.id, component.textColorHex) { mutableStateOf(component.textColorHex) }
-    var imagePathInput by remember(component.id, component.customImagePath) { mutableStateOf(component.customImagePath) }
+    var bgColorInput by remember(component.id) { mutableStateOf(component.bgColorHex) }
+    var textColorInput by remember(component.id) { mutableStateOf(component.textColorHex) }
+    var imagePathInput by remember(component.id) { mutableStateOf(component.customImagePath) }
 
-    var soundTrigger by remember(component.id, component.soundTrigger) { mutableStateOf(component.soundTrigger) }
-    var customSoundPath by remember(component.id, component.customSoundPath) { mutableStateOf(component.customSoundPath) }
-    var offSoundTrigger by remember(component.id, component.offSoundTrigger) { mutableStateOf(component.offSoundTrigger) }
-    var offCustomSoundPath by remember(component.id, component.offCustomSoundPath) { mutableStateOf(component.offCustomSoundPath) }
+    var soundTrigger by remember(component.id) { mutableStateOf(component.soundTrigger) }
+    var customSoundPath by remember(component.id) { mutableStateOf(component.customSoundPath) }
+    var offSoundTrigger by remember(component.id) { mutableStateOf(component.offSoundTrigger) }
+    var offCustomSoundPath by remember(component.id) { mutableStateOf(component.offCustomSoundPath) }
 
-    var targetFileInput by remember(component.id, component.targetFilePath) { mutableStateOf(component.targetFilePath) }
-    var offsetHexInput by remember(component.id, component.byteOffsetHex) { mutableStateOf(component.byteOffsetHex) }
-    var onPayloadInput by remember(component.id, component.onPayloadHex) { mutableStateOf(component.onPayloadHex) }
-    var offPayloadInput by remember(component.id, component.offPayloadHex) { mutableStateOf(component.offPayloadHex) }
-    var sliderMaxInput by remember(component.id, component.sliderMax) { mutableStateOf(component.sliderMax.toString()) }
-    var linkUrlInput by remember(component.id, component.linkUrl) { mutableStateOf(component.linkUrl) }
+    var targetFileInput by remember(component.id) { mutableStateOf(component.targetFilePath) }
+    var offsetHexInput by remember(component.id) { mutableStateOf(component.byteOffsetHex) }
+    var onPayloadInput by remember(component.id) { mutableStateOf(component.onPayloadHex) }
+    var offPayloadInput by remember(component.id) { mutableStateOf(component.offPayloadHex) }
+    var sliderMaxInput by remember(component.id) { mutableStateOf(component.sliderMax.toString()) }
+    var linkUrlInput by remember(component.id) { mutableStateOf(component.linkUrl) }
 
     val isCurrentlyOn = component.currentValue == "1" || component.currentValue.equals("true", ignoreCase = true)
 
+    // Sync external drag/resize/picker updates without wiping user typing
+    LaunchedEffect(component.widthDp, component.heightDp) {
+        if (widthInput.toIntOrNull() != component.widthDp) {
+            widthInput = component.widthDp.toString()
+        }
+        if (heightInput.toIntOrNull() != component.heightDp) {
+            heightInput = component.heightDp.toString()
+        }
+    }
+    LaunchedEffect(component.posXDp, component.posYDp) {
+        if (posXInput.toIntOrNull() != component.posXDp) {
+            posXInput = component.posXDp.toString()
+        }
+        if (posYInput.toIntOrNull() != component.posYDp) {
+            posYInput = component.posYDp.toString()
+        }
+    }
     LaunchedEffect(component.customImagePath) {
-        imagePathInput = component.customImagePath
+        if (component.customImagePath.isNotBlank() && imagePathInput != component.customImagePath) {
+            imagePathInput = component.customImagePath
+        }
     }
     LaunchedEffect(component.customSoundPath, component.soundTrigger) {
         customSoundPath = component.customSoundPath
@@ -152,17 +172,56 @@ fun PropertyInspectorBottomDock(
         offCustomSoundPath = component.offCustomSoundPath
         offSoundTrigger = component.offSoundTrigger
     }
-    LaunchedEffect(component.targetFilePath, component.onPayloadHex, component.offPayloadHex, component.linkUrl) {
-        targetFileInput = component.targetFilePath
-        onPayloadInput = component.onPayloadHex
-        offPayloadInput = component.offPayloadHex
-        linkUrlInput = component.linkUrl
+
+    fun buildEditedComponent(
+        typeOverride: String = currentType,
+        labelOverride: String = labelText,
+        widthOverride: Int = widthInput.toIntOrNull()?.coerceIn(40, 380) ?: component.widthDp,
+        heightOverride: Int = heightInput.toIntOrNull()?.coerceIn(28, 320) ?: component.heightDp,
+        posXOverride: Int = posXInput.toIntOrNull()?.coerceAtLeast(0) ?: component.posXDp,
+        posYOverride: Int = posYInput.toIntOrNull() ?: component.posYDp,
+        bgHexOverride: String = bgColorInput,
+        textHexOverride: String = textColorInput,
+        imageOverride: String = imagePathInput,
+        onSoundTriggerOverride: String = soundTrigger,
+        onSoundPathOverride: String = customSoundPath,
+        offSoundTriggerOverride: String = offSoundTrigger,
+        offSoundPathOverride: String = offCustomSoundPath,
+        targetPathOverride: String = targetFileInput,
+        offsetHexOverride: String = offsetHexInput,
+        onPayloadOverride: String = onPayloadInput,
+        offPayloadOverride: String = offPayloadInput,
+        sliderMaxOverride: Int = sliderMaxInput.toIntOrNull()?.coerceIn(1, 100000) ?: component.sliderMax,
+        linkUrlOverride: String = linkUrlInput
+    ): CanvasComponentEntity {
+        return component.copy(
+            type = typeOverride,
+            label = labelOverride,
+            widthDp = widthOverride,
+            heightDp = heightOverride,
+            posXDp = posXOverride,
+            posYDp = posYOverride,
+            bgColorHex = bgHexOverride,
+            textColorHex = textHexOverride,
+            customImagePath = imageOverride,
+            soundTrigger = onSoundTriggerOverride,
+            customSoundPath = onSoundPathOverride,
+            offSoundTrigger = offSoundTriggerOverride,
+            offCustomSoundPath = offSoundPathOverride,
+            targetFilePath = targetPathOverride,
+            byteOffsetHex = offsetHexOverride,
+            onPayloadHex = onPayloadOverride,
+            offPayloadHex = offPayloadOverride,
+            sliderMax = sliderMaxOverride,
+            linkUrl = linkUrlOverride
+        )
     }
 
     val photoPickerLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.PickVisualMedia()
     ) { uri ->
         if (uri != null) {
+            onUpdateComponent(buildEditedComponent())
             onPickImageUri(uri)
         }
     }
@@ -171,6 +230,7 @@ fun PropertyInspectorBottomDock(
         contract = ActivityResultContracts.GetContent()
     ) { uri ->
         if (uri != null) {
+            onUpdateComponent(buildEditedComponent())
             onPickSoundUri(uri, false)
         }
     }
@@ -179,6 +239,7 @@ fun PropertyInspectorBottomDock(
         contract = ActivityResultContracts.GetContent()
     ) { uri ->
         if (uri != null) {
+            onUpdateComponent(buildEditedComponent())
             onPickSoundUri(uri, true)
         }
     }
@@ -190,13 +251,13 @@ fun PropertyInspectorBottomDock(
             val resolvedPath = resolvePickedTargetFilePath(context, uri, component.id)
             if (resolvedPath.isNotBlank()) {
                 targetFileInput = resolvedPath
-                onUpdateComponent(component.copy(targetFilePath = resolvedPath))
+                onUpdateComponent(buildEditedComponent(targetPathOverride = resolvedPath))
             }
         }
     }
 
-    val sketchWidgetId = remember(component.id, component.type) {
-        val prefix = when (component.type) {
+    val sketchWidgetId = remember(component.id, currentType) {
+        val prefix = when (currentType) {
             ComponentWidgetType.TEXT.name -> "textview"
             ComponentWidgetType.TOGGLE.name -> "switch"
             ComponentWidgetType.BUTTON.name -> "button"
@@ -223,7 +284,7 @@ fun PropertyInspectorBottomDock(
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .heightIn(max = 330.dp)
+                .heightIn(max = 340.dp)
         ) {
             // 1. COMPACT SKETCHWARE BRIGHT BLUE TOP BAR (#0288D1)
             Row(
@@ -253,7 +314,7 @@ fun PropertyInspectorBottomDock(
                     }
                     Spacer(modifier = Modifier.width(6.dp))
                     Text(
-                        text = "$sketchWidgetId (${component.label})",
+                        text = "$sketchWidgetId ($labelText)",
                         color = Color.White,
                         fontSize = 12.sp,
                         fontWeight = FontWeight.Bold,
@@ -269,7 +330,10 @@ fun PropertyInspectorBottomDock(
 
                 // Center: Crystal-Clear ON / OFF State Toggle Pill right in the Blue Bar!
                 Surface(
-                    onClick = onTestTriggerWrite,
+                    onClick = {
+                        onUpdateComponent(buildEditedComponent())
+                        onTestTriggerWrite()
+                    },
                     shape = RoundedCornerShape(999.dp),
                     color = if (isCurrentlyOn) Color(0xFF00C853) else Color(0xFFEF4444),
                     border = BorderStroke(1.dp, Color.White)
@@ -294,10 +358,46 @@ fun PropertyInspectorBottomDock(
                     }
                 }
 
-                // Right: Save/Duplicate/Delete/Close icons
+                Spacer(modifier = Modifier.width(6.dp))
+
+                // Prominent SAVE Button Pill in the Inspector Header
+                Surface(
+                    onClick = {
+                        val latest = buildEditedComponent()
+                        onSaveDesign(latest)
+                    },
+                    shape = RoundedCornerShape(6.dp),
+                    color = Color(0xFF00C853),
+                    border = BorderStroke(1.dp, Color.White),
+                    modifier = Modifier.testTag("inspector_save_design_button")
+                ) {
+                    Row(
+                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Save,
+                            contentDescription = "Save Widget Design",
+                            tint = Color.White,
+                            modifier = Modifier.size(13.dp)
+                        )
+                        Text(
+                            text = "Save",
+                            color = Color.White,
+                            fontSize = 10.sp,
+                            fontWeight = FontWeight.ExtraBold
+                        )
+                    }
+                }
+
+                // Right: Duplicate/Delete/Close icons
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     IconButton(
-                        onClick = onDuplicateComponent,
+                        onClick = {
+                            onUpdateComponent(buildEditedComponent())
+                            onDuplicateComponent()
+                        },
                         modifier = Modifier
                             .size(28.dp)
                             .testTag("inspector_duplicate_button")
@@ -323,13 +423,17 @@ fun PropertyInspectorBottomDock(
                         )
                     }
                     IconButton(
-                        onClick = onCloseDock,
+                        onClick = {
+                            val latest = buildEditedComponent()
+                            onSaveDesign(latest)
+                            onCloseDock()
+                        },
                         modifier = Modifier
                             .size(28.dp)
                             .testTag("inspector_close_button")
                     ) {
                         Icon(
-                            imageVector = Icons.Default.Save,
+                            imageVector = Icons.Default.Close,
                             contentDescription = "Save & Close Inspector",
                             tint = Color.White,
                             modifier = Modifier.size(16.dp)
@@ -338,7 +442,7 @@ fun PropertyInspectorBottomDock(
                 }
             }
 
-            // 2. COMPACT PROPERTY ACTION CARDS ROW ("auto fix", "inject", "convert", "width", "height", "bg color", "on sound", "off sound")
+            // 2. COMPACT PROPERTY ACTION CARDS ROW ("save", "convert", "edit code", "auto fix", "path", "original", "change", "width", "height", "bg color", "on sound", "off sound")
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -353,18 +457,57 @@ fun PropertyInspectorBottomDock(
                     horizontalArrangement = Arrangement.spacedBy(6.dp)
                 ) {
                     SketchwarePropertySquareCard(
+                        title = "save",
+                        icon = Icons.Default.Save,
+                        iconTint = Color(0xFF00C853),
+                        isSelected = false,
+                        onClick = {
+                            val latest = buildEditedComponent()
+                            onSaveDesign(latest)
+                        }
+                    )
+                    SketchwarePropertySquareCard(
+                        title = "convert",
+                        icon = Icons.Default.SyncAlt,
+                        iconTint = Color(0xFFF59E0B),
+                        isSelected = false,
+                        onClick = {
+                            // Cycles widget between TOGGLE, BUTTON, SLIDER, INPUT, LINK, TEXT, IMAGE
+                            val order = listOf(
+                                ComponentWidgetType.TOGGLE.name,
+                                ComponentWidgetType.BUTTON.name,
+                                ComponentWidgetType.SLIDER.name,
+                                ComponentWidgetType.INPUT.name,
+                                ComponentWidgetType.LINK.name,
+                                ComponentWidgetType.TEXT.name,
+                                ComponentWidgetType.IMAGE.name
+                            )
+                            val nextIdx = (order.indexOf(currentType) + 1) % order.size
+                            val nextType = order[nextIdx]
+                            currentType = nextType
+                            val updated = buildEditedComponent(typeOverride = nextType)
+                            onSaveDesign(updated)
+                        }
+                    )
+                    SketchwarePropertySquareCard(
                         title = "edit code",
                         icon = Icons.Default.Code,
                         iconTint = Color(0xFF00C853),
                         isSelected = false,
-                        onClick = onOpenEditCode
+                        onClick = {
+                            onUpdateComponent(buildEditedComponent())
+                            onOpenEditCode()
+                        }
                     )
                     SketchwarePropertySquareCard(
                         title = "auto fix",
                         icon = Icons.Default.SwapHoriz,
                         iconTint = if (isAutoFixSize) Color(0xFF00C853) else Color(0xFF0288D1),
                         isSelected = isAutoFixSize,
-                        onClick = onToggleAutoFixSize
+                        onClick = {
+                            onUpdateComponent(buildEditedComponent())
+                            onToggleAutoFixSize()
+                        }
                     )
                     SketchwarePropertySquareCard(
                         title = "widget code",
@@ -395,25 +538,6 @@ fun PropertyInspectorBottomDock(
                         onClick = { selectedTab = 0 }
                     )
                     SketchwarePropertySquareCard(
-                        title = "convert",
-                        icon = Icons.Default.SyncAlt,
-                        iconTint = Color(0xFFF59E0B),
-                        isSelected = false,
-                        onClick = {
-                            // Cycles widget between TOGGLE, BUTTON, SLIDER, INPUT, LINK, TEXT
-                            val order = listOf(
-                                ComponentWidgetType.TOGGLE.name,
-                                ComponentWidgetType.BUTTON.name,
-                                ComponentWidgetType.SLIDER.name,
-                                ComponentWidgetType.INPUT.name,
-                                ComponentWidgetType.LINK.name,
-                                ComponentWidgetType.TEXT.name
-                            )
-                            val nextIdx = (order.indexOf(component.type) + 1) % order.size
-                            onUpdateComponent(component.copy(type = order[nextIdx]))
-                        }
-                    )
-                    SketchwarePropertySquareCard(
                         title = "width",
                         icon = Icons.Default.SwapHoriz,
                         iconTint = Color(0xFF0288D1),
@@ -432,7 +556,10 @@ fun PropertyInspectorBottomDock(
                         icon = Icons.Default.PowerSettingsNew,
                         iconTint = if (isCurrentlyOn) Color(0xFF00C853) else Color(0xFFEF4444),
                         isSelected = isCurrentlyOn,
-                        onClick = onTestTriggerWrite
+                        onClick = {
+                            onUpdateComponent(buildEditedComponent())
+                            onTestTriggerWrite()
+                        }
                     )
                     SketchwarePropertySquareCard(
                         title = "text",
@@ -543,11 +670,46 @@ fun PropertyInspectorBottomDock(
                 when (selectedTab) {
                     // TAB 0: PATH + ORIGINAL + CHANGE (PYTHON / SCRIPT / FILE PATCHING), LINK URL, LABEL & DIMENSIONS
                     0 -> {
+                        // Widget Design Type Selector Chips
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .horizontalScroll(rememberScrollState()),
+                            horizontalArrangement = Arrangement.spacedBy(6.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                text = "Design Type:",
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.ExtraBold,
+                                color = Color(0xFF0F172A)
+                            )
+                            listOf(
+                                ComponentWidgetType.TOGGLE.name to "Switch",
+                                ComponentWidgetType.BUTTON.name to "Button",
+                                ComponentWidgetType.SLIDER.name to "Slide Bar",
+                                ComponentWidgetType.INPUT.name to "Value Input",
+                                ComponentWidgetType.LINK.name to "Open Link",
+                                ComponentWidgetType.TEXT.name to "TextView",
+                                ComponentWidgetType.IMAGE.name to "ImageView"
+                            ).forEach { (typeKey, displayLabel) ->
+                                FilterChip(
+                                    selected = currentType == typeKey,
+                                    onClick = {
+                                        currentType = typeKey
+                                        val updated = buildEditedComponent(typeOverride = typeKey)
+                                        onSaveDesign(updated)
+                                    },
+                                    label = { Text(displayLabel, fontSize = 10.sp, fontWeight = FontWeight.Bold) }
+                                )
+                            }
+                        }
+
                         OutlinedTextField(
                             value = labelText,
                             onValueChange = {
                                 labelText = it
-                                onUpdateComponent(component.copy(label = it))
+                                onUpdateComponent(buildEditedComponent(labelOverride = it))
                             },
                             label = { Text("Component Text / Label") },
                             singleLine = true,
@@ -556,7 +718,7 @@ fun PropertyInspectorBottomDock(
                                 .testTag("inspector_label_input")
                         )
 
-                        if (component.type == ComponentWidgetType.LINK.name) {
+                        if (currentType == ComponentWidgetType.LINK.name) {
                             Surface(
                                 color = Color(0xFFF0F9FF),
                                 shape = RoundedCornerShape(8.dp),
@@ -578,7 +740,7 @@ fun PropertyInspectorBottomDock(
                                         value = linkUrlInput,
                                         onValueChange = {
                                             linkUrlInput = it
-                                            onUpdateComponent(component.copy(linkUrl = it))
+                                            onUpdateComponent(buildEditedComponent(linkUrlOverride = it))
                                         },
                                         label = { Text("Link URL (https://...)") },
                                         placeholder = { Text("https://t.me/your_channel") },
@@ -603,7 +765,7 @@ fun PropertyInspectorBottomDock(
                                             AssistChip(
                                                 onClick = {
                                                     linkUrlInput = presetUrl
-                                                    onUpdateComponent(component.copy(linkUrl = presetUrl))
+                                                    onUpdateComponent(buildEditedComponent(linkUrlOverride = presetUrl))
                                                 },
                                                 label = { Text(chipTitle, fontSize = 10.sp) },
                                                 colors = AssistChipDefaults.assistChipColors(
@@ -615,6 +777,7 @@ fun PropertyInspectorBottomDock(
 
                                     Button(
                                         onClick = {
+                                            onUpdateComponent(buildEditedComponent())
                                             val raw = linkUrlInput.trim().ifEmpty { "https://google.com" }
                                             val formatted = if (raw.startsWith("http://") || raw.startsWith("https://")) raw else "https://$raw"
                                             try {
@@ -656,7 +819,7 @@ fun PropertyInspectorBottomDock(
                                     verticalArrangement = Arrangement.spacedBy(8.dp)
                                 ) {
                                     Text(
-                                        text = when (component.type) {
+                                        text = when (currentType) {
                                             ComponentWidgetType.SLIDER.name ->
                                                 "🐍 Python / File Live Slider Patch (Path • Original • Change):"
                                             ComponentWidgetType.INPUT.name ->
@@ -679,7 +842,7 @@ fun PropertyInspectorBottomDock(
                                             value = targetFileInput,
                                             onValueChange = {
                                                 targetFileInput = it
-                                                onUpdateComponent(component.copy(targetFilePath = it))
+                                                onUpdateComponent(buildEditedComponent(targetPathOverride = it))
                                             },
                                             label = { Text("Path (Python .py / File Path)") },
                                             placeholder = { Text("/sdcard/script.py") },
@@ -708,11 +871,11 @@ fun PropertyInspectorBottomDock(
                                             value = offPayloadInput,
                                             onValueChange = {
                                                 offPayloadInput = it
-                                                onUpdateComponent(component.copy(offPayloadHex = it))
+                                                onUpdateComponent(buildEditedComponent(offPayloadOverride = it))
                                             },
                                             label = {
                                                 Text(
-                                                    when (component.type) {
+                                                    when (currentType) {
                                                         ComponentWidgetType.SLIDER.name -> "Original (e.g. speed = 10)"
                                                         ComponentWidgetType.INPUT.name -> "Original (e.g. key = \"old\")"
                                                         else -> "Original (OFF / Original Area)"
@@ -721,7 +884,7 @@ fun PropertyInspectorBottomDock(
                                             },
                                             placeholder = {
                                                 Text(
-                                                    when (component.type) {
+                                                    when (currentType) {
                                                         ComponentWidgetType.SLIDER.name -> "speed = 10"
                                                         else -> "aimbot = False"
                                                     }
@@ -737,11 +900,11 @@ fun PropertyInspectorBottomDock(
                                             value = onPayloadInput,
                                             onValueChange = {
                                                 onPayloadInput = it
-                                                onUpdateComponent(component.copy(onPayloadHex = it))
+                                                onUpdateComponent(buildEditedComponent(onPayloadOverride = it))
                                             },
                                             label = {
                                                 Text(
-                                                    when (component.type) {
+                                                    when (currentType) {
                                                         ComponentWidgetType.SLIDER.name -> "Change (e.g. speed = {value})"
                                                         ComponentWidgetType.INPUT.name -> "Change (e.g. key = \"{value}\")"
                                                         else -> "Change (ON / Changed Area)"
@@ -750,7 +913,7 @@ fun PropertyInspectorBottomDock(
                                             },
                                             placeholder = {
                                                 Text(
-                                                    when (component.type) {
+                                                    when (currentType) {
                                                         ComponentWidgetType.SLIDER.name -> "speed = {value}"
                                                         else -> "aimbot = True"
                                                     }
@@ -763,14 +926,16 @@ fun PropertyInspectorBottomDock(
                                         )
                                     }
 
-                                    if (component.type == ComponentWidgetType.SLIDER.name) {
+                                    if (currentType == ComponentWidgetType.SLIDER.name) {
                                         OutlinedTextField(
                                             value = sliderMaxInput,
                                             onValueChange = {
                                                 sliderMaxInput = it
                                                 val parsedMax = it.toIntOrNull()
                                                 if (parsedMax != null && parsedMax >= 1) {
-                                                    onUpdateComponent(component.copy(sliderMax = parsedMax.coerceIn(1, 100000)))
+                                                    onUpdateComponent(
+                                                        buildEditedComponent(sliderMaxOverride = parsedMax.coerceIn(1, 100000))
+                                                    )
                                                 }
                                             },
                                             label = { Text("Slider Max Value (0 - Max)") },
@@ -783,7 +948,10 @@ fun PropertyInspectorBottomDock(
                                     }
 
                                     Button(
-                                        onClick = onTestTriggerWrite,
+                                        onClick = {
+                                            onUpdateComponent(buildEditedComponent())
+                                            onTestTriggerWrite()
+                                        },
                                         colors = ButtonDefaults.buttonColors(
                                             containerColor = if (isCurrentlyOn) Color(0xFF00C853) else Color(0xFF1E293B)
                                         ),
@@ -820,7 +988,7 @@ fun PropertyInspectorBottomDock(
                                     widthInput = it
                                     val parsed = it.toIntOrNull()
                                     if (parsed != null) {
-                                        onUpdateComponent(component.copy(widthDp = parsed.coerceIn(40, 380)))
+                                        onUpdateComponent(buildEditedComponent(widthOverride = parsed.coerceIn(40, 380)))
                                     }
                                 },
                                 label = { Text("Width (dp)") },
@@ -837,7 +1005,7 @@ fun PropertyInspectorBottomDock(
                                     heightInput = it
                                     val parsed = it.toIntOrNull()
                                     if (parsed != null) {
-                                        onUpdateComponent(component.copy(heightDp = parsed.coerceIn(32, 320)))
+                                        onUpdateComponent(buildEditedComponent(heightOverride = parsed.coerceIn(28, 320)))
                                     }
                                 },
                                 label = { Text("Height (dp)") },
@@ -859,7 +1027,7 @@ fun PropertyInspectorBottomDock(
                                     posXInput = it
                                     val parsed = it.toIntOrNull()
                                     if (parsed != null) {
-                                        onUpdateComponent(component.copy(posXDp = parsed.coerceAtLeast(0)))
+                                        onUpdateComponent(buildEditedComponent(posXOverride = parsed.coerceAtLeast(0)))
                                     }
                                 },
                                 label = { Text("X Position (dp)") },
@@ -874,7 +1042,7 @@ fun PropertyInspectorBottomDock(
                                     posYInput = it
                                     val parsed = it.toIntOrNull()
                                     if (parsed != null) {
-                                        onUpdateComponent(component.copy(posYDp = parsed.coerceAtLeast(0)))
+                                        onUpdateComponent(buildEditedComponent(posYOverride = parsed))
                                     }
                                 },
                                 label = { Text("Y Position (dp)") },
@@ -918,7 +1086,15 @@ fun PropertyInspectorBottomDock(
                                         )
                                         .clickable {
                                             bgColorInput = hex
-                                            onUpdateComponent(component.copy(bgColorHex = hex))
+                                            // Automatically set a contrasting text color if needed
+                                            val autoTextHex = if (hex == "#FFFFFF" || hex == "#FDE047") "#0F172A" else "#FFFFFF"
+                                            textColorInput = autoTextHex
+                                            onUpdateComponent(
+                                                buildEditedComponent(
+                                                    bgHexOverride = hex,
+                                                    textHexOverride = autoTextHex
+                                                )
+                                            )
                                         }
                                 )
                             }
@@ -932,7 +1108,7 @@ fun PropertyInspectorBottomDock(
                                 value = bgColorInput,
                                 onValueChange = {
                                     bgColorInput = it
-                                    onUpdateComponent(component.copy(bgColorHex = it))
+                                    onUpdateComponent(buildEditedComponent(bgHexOverride = it))
                                 },
                                 label = { Text("Background Hex") },
                                 singleLine = true,
@@ -945,7 +1121,7 @@ fun PropertyInspectorBottomDock(
                                 value = textColorInput,
                                 onValueChange = {
                                     textColorInput = it
-                                    onUpdateComponent(component.copy(textColorHex = it))
+                                    onUpdateComponent(buildEditedComponent(textHexOverride = it))
                                 },
                                 label = { Text("Text Hex") },
                                 singleLine = true,
@@ -964,7 +1140,7 @@ fun PropertyInspectorBottomDock(
                                 value = imagePathInput,
                                 onValueChange = {
                                     imagePathInput = it
-                                    onUpdateComponent(component.copy(customImagePath = it))
+                                    onUpdateComponent(buildEditedComponent(imageOverride = it))
                                 },
                                 label = { Text("Custom Background / Icon Image Path") },
                                 placeholder = { Text("/storage/.../custom_bg.png") },
@@ -1050,7 +1226,7 @@ fun PropertyInspectorBottomDock(
                                             selected = soundTrigger == code,
                                             onClick = {
                                                 soundTrigger = code
-                                                onUpdateComponent(component.copy(soundTrigger = code))
+                                                onUpdateComponent(buildEditedComponent(onSoundTriggerOverride = code))
                                                 SoundTriggerPlayer.playSoundTrigger(context, null, code, customSoundPath)
                                             },
                                             label = { Text(label, fontSize = 11.sp) }
@@ -1070,9 +1246,9 @@ fun PropertyInspectorBottomDock(
                                             val resolvedTrigger = if (it.isNotBlank()) SoundTriggerPlayer.SOUND_CUSTOM_FILE else soundTrigger
                                             soundTrigger = resolvedTrigger
                                             onUpdateComponent(
-                                                component.copy(
-                                                    customSoundPath = it,
-                                                    soundTrigger = resolvedTrigger
+                                                buildEditedComponent(
+                                                    onSoundPathOverride = it,
+                                                    onSoundTriggerOverride = resolvedTrigger
                                                 )
                                             )
                                         },
@@ -1164,7 +1340,7 @@ fun PropertyInspectorBottomDock(
                                             selected = offSoundTrigger == code,
                                             onClick = {
                                                 offSoundTrigger = code
-                                                onUpdateComponent(component.copy(offSoundTrigger = code))
+                                                onUpdateComponent(buildEditedComponent(offSoundTriggerOverride = code))
                                                 SoundTriggerPlayer.playSoundTrigger(context, null, code, offCustomSoundPath)
                                             },
                                             label = { Text(label, fontSize = 11.sp) }
@@ -1184,9 +1360,9 @@ fun PropertyInspectorBottomDock(
                                             val resolvedTrigger = if (it.isNotBlank()) SoundTriggerPlayer.SOUND_CUSTOM_FILE else offSoundTrigger
                                             offSoundTrigger = resolvedTrigger
                                             onUpdateComponent(
-                                                component.copy(
-                                                    offCustomSoundPath = it,
-                                                    offSoundTrigger = resolvedTrigger
+                                                buildEditedComponent(
+                                                    offSoundPathOverride = it,
+                                                    offSoundTriggerOverride = resolvedTrigger
                                                 )
                                             )
                                         },
@@ -1239,26 +1415,26 @@ fun PropertyInspectorBottomDock(
                     3 -> {
                         val widgetKotlinSnippet = remember(
                             component.id,
-                            component.type,
-                            component.label,
-                            component.posXDp,
-                            component.posYDp,
-                            component.widthDp,
-                            component.heightDp,
-                            component.bgColorHex,
-                            component.textColorHex,
-                            component.sliderMax,
+                            currentType,
+                            labelText,
+                            posXInput,
+                            posYInput,
+                            widthInput,
+                            heightInput,
+                            bgColorInput,
+                            textColorInput,
+                            sliderMaxInput,
                             component.currentValue
                         ) {
                             buildString {
                                 appendLine("VisualWidgetSpec(")
                                 appendLine("    id = ${component.id}L,")
-                                appendLine("    type = \"${component.type}\",")
-                                appendLine("    label = \"${component.label}\",")
-                                appendLine("    posXDp = ${component.posXDp}, posYDp = ${component.posYDp},")
-                                appendLine("    widthDp = ${component.widthDp}, heightDp = ${component.heightDp},")
-                                appendLine("    bgColorHex = \"${component.bgColorHex}\", textColorHex = \"${component.textColorHex}\",")
-                                appendLine("    sliderMax = ${component.sliderMax}, currentValue = \"${component.currentValue}\"")
+                                appendLine("    type = \"$currentType\",")
+                                appendLine("    label = \"$labelText\",")
+                                appendLine("    posXDp = $posXInput, posYDp = $posYInput,")
+                                appendLine("    widthDp = $widthInput, heightDp = $heightInput,")
+                                appendLine("    bgColorHex = \"$bgColorInput\", textColorHex = \"$textColorInput\",")
+                                appendLine("    sliderMax = $sliderMaxInput, currentValue = \"${component.currentValue}\"")
                                 append(")")
                             }
                         }
@@ -1291,7 +1467,10 @@ fun PropertyInspectorBottomDock(
                         }
 
                         Button(
-                            onClick = onOpenEditCode,
+                            onClick = {
+                                onUpdateComponent(buildEditedComponent())
+                                onOpenEditCode()
+                            },
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .testTag("inspector_open_edit_code_button"),
@@ -1311,6 +1490,34 @@ fun PropertyInspectorBottomDock(
                             )
                         }
                     }
+                }
+
+                // FULL-WIDTH SAVE WIDGET & DESIGN BUTTON AT BOTTOM OF INSPECTOR
+                Button(
+                    onClick = {
+                        val latest = buildEditedComponent()
+                        onSaveDesign(latest)
+                    },
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = Color(0xFF00C853),
+                        contentColor = Color.White
+                    ),
+                    shape = RoundedCornerShape(8.dp),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .testTag("inspector_bottom_save_button")
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Save,
+                        contentDescription = "Save Widget & Design",
+                        modifier = Modifier.size(16.dp)
+                    )
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text(
+                        text = "Save Widget & Design",
+                        fontWeight = FontWeight.ExtraBold,
+                        fontSize = 12.sp
+                    )
                 }
             }
         }

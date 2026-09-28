@@ -43,6 +43,7 @@ import androidx.compose.material.icons.filled.LinearScale
 import androidx.compose.material.icons.filled.PowerSettingsNew
 import androidx.compose.material.icons.filled.RadioButtonChecked
 import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.Save
 import androidx.compose.material.icons.filled.Shield
 import androidx.compose.material.icons.filled.SignalCellular4Bar
 import androidx.compose.material.icons.filled.SmartButton
@@ -216,6 +217,7 @@ fun SketchwareStudioSplitWorkspace(
     onResizeCanvas: (Int, Int) -> Unit,
     onToggleAutoFixSize: () -> Unit = {},
     onOpenEditFloatingPanel: () -> Unit = {},
+    onSaveDesign: () -> Unit = {},
     onTriggerComponentLive: (CanvasComponentEntity, String?) -> Unit,
     onClearCanvas: () -> Unit,
     modifier: Modifier = Modifier
@@ -429,8 +431,34 @@ fun SketchwareStudioSplitWorkspace(
 
                         Row(
                             verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)
                         ) {
+                            Surface(
+                                onClick = onSaveDesign,
+                                color = Color(0xFF00C853),
+                                shape = RoundedCornerShape(4.dp),
+                                modifier = Modifier.testTag("xml_bar_save_design_button")
+                            ) {
+                                Row(
+                                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(3.dp)
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.Save,
+                                        contentDescription = "Save Design",
+                                        tint = Color.White,
+                                        modifier = Modifier.size(11.dp)
+                                    )
+                                    Text(
+                                        text = "Save Design",
+                                        color = Color.White,
+                                        fontSize = 9.sp,
+                                        fontWeight = FontWeight.ExtraBold
+                                    )
+                                }
+                            }
+
                             Surface(
                                 onClick = onOpenEditFloatingPanel,
                                 color = Color(0xFF0F172A),
@@ -449,7 +477,7 @@ fun SketchwareStudioSplitWorkspace(
                                         modifier = Modifier.size(11.dp)
                                     )
                                     Text(
-                                        text = "Edit Panel Name & Logo",
+                                        text = "Panel Name & Logo",
                                         color = Color(0xFF38BDF8),
                                         fontSize = 9.sp,
                                         fontWeight = FontWeight.Bold
@@ -459,7 +487,7 @@ fun SketchwareStudioSplitWorkspace(
 
                             if (components.isNotEmpty()) {
                                 Text(
-                                    text = "Clear All",
+                                    text = "Clear",
                                     color = Color(0xFFFECACA),
                                     fontSize = 10.sp,
                                     fontWeight = FontWeight.Bold,
@@ -469,6 +497,26 @@ fun SketchwareStudioSplitWorkspace(
                                         .testTag("clear_canvas_button")
                                 )
                             }
+                        }
+                    }
+
+                    if (statusToast.isNotBlank()) {
+                        Surface(
+                            color = Color(0xFFF0FDF4),
+                            border = BorderStroke(0.5.dp, Color(0xFF86EFAC)),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Text(
+                                text = statusToast,
+                                color = Color(0xFF166534),
+                                fontSize = 9.sp,
+                                fontWeight = FontWeight.Bold,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                                modifier = Modifier
+                                    .padding(horizontal = 8.dp, vertical = 2.dp)
+                                    .testTag("workspace_status_toast_text")
+                            )
                         }
                     }
 
@@ -1135,18 +1183,22 @@ private fun CanvasElementView(
 
         when (component.type) {
             ComponentWidgetType.TOGGLE.name -> {
-                // Classic Switch Toggle design (with STATE: ON / STATE: OFF removed)
+                val toggleBg = when {
+                    customBitmap != null -> Color.Transparent
+                    isCheckedOn && component.bgColorHex.equals("#FFFFFF", ignoreCase = true) -> Color(0xFFECFDF5)
+                    else -> bgColor
+                }
                 Row(
                     modifier = Modifier
                         .fillMaxSize()
-                        .background(if (isCheckedOn) Color(0xFFECFDF5) else Color.White)
+                        .background(toggleBg)
                         .padding(horizontal = 8.dp, vertical = 4.dp),
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.SpaceBetween
                 ) {
                     Text(
                         text = component.label,
-                        color = Color(0xFF1E293B),
+                        color = txtColor,
                         fontSize = 11.sp,
                         fontWeight = FontWeight.ExtraBold,
                         maxLines = 1,
@@ -1215,7 +1267,7 @@ private fun CanvasElementView(
                 Column(
                     modifier = Modifier
                         .fillMaxSize()
-                        .background(Color.White)
+                        .background(if (customBitmap != null) Color.Transparent else bgColor)
                         .padding(horizontal = 8.dp, vertical = 4.dp),
                     verticalArrangement = Arrangement.Center
                 ) {
@@ -1226,7 +1278,7 @@ private fun CanvasElementView(
                     ) {
                         Text(
                             text = component.label,
-                            color = Color(0xFF1E293B),
+                            color = txtColor,
                             fontSize = 11.sp,
                             fontWeight = FontWeight.ExtraBold,
                             maxLines = 1,

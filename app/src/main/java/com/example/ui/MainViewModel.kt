@@ -554,11 +554,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             studioDao.updateProject(project.copy(updatedAt = System.currentTimeMillis()))
             _uiState.update {
                 it.copy(
-                    selectedComponentId = null,
+                    selectedComponentId = newId,
+                    customEditedKotlinFiles = emptyMap(),
                     statusToast = if (project.autoFixSize)
-                        "Added '$defaultLabel' (Auto-fitted). Tap widget to edit."
+                        "Added '$defaultLabel' (Auto-fitted). Edit below & tap Save."
                     else
-                        "Added '$defaultLabel' — Tap widget or top chip to edit."
+                        "Added '$defaultLabel' — Customize below & tap Save."
                 )
             }
         }
@@ -594,6 +595,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         _uiState.update {
             it.copy(
                 activeProject = updatedProject,
+                customEditedKotlinFiles = emptyMap(),
                 statusToast = if (nextAutoFix)
                     "Auto Fix Size ON: Full-width stacked widgets + scroll active."
                 else
@@ -652,6 +654,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         _uiState.update {
             it.copy(
                 activeProject = updatedProject,
+                customEditedKotlinFiles = emptyMap(),
                 statusToast = "Floating Mod Menu Size: ${newW}dp × ${newH}dp"
             )
         }
@@ -677,7 +680,38 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch {
             studioDao.updateComponent(updated)
             _uiState.value.activeProject?.let { proj ->
-                studioDao.updateProject(proj.copy(updatedAt = System.currentTimeMillis()))
+                val updatedProj = proj.copy(updatedAt = System.currentTimeMillis())
+                studioDao.updateProject(updatedProj)
+            }
+            // Clear any cached code snapshot so visual design changes are always authoritative on Build
+            if (_uiState.value.customEditedKotlinFiles.isNotEmpty()) {
+                _uiState.update { it.copy(customEditedKotlinFiles = emptyMap()) }
+            }
+        }
+    }
+
+    /**
+     * Explicitly saves the current visual design (project dimensions, panel name/logo, and all widgets)
+     * to Room Database and syncs the build blueprint so Building the APK always uses this exact design.
+     */
+    fun saveCurrentProjectDesign(editedComponent: CanvasComponentEntity? = null) {
+        val currentProject = _uiState.value.activeProject ?: return
+        viewModelScope.launch {
+            if (editedComponent != null) {
+                studioDao.updateComponent(editedComponent)
+            }
+            val updatedProj = currentProject.copy(updatedAt = System.currentTimeMillis())
+            studioDao.updateProject(updatedProj)
+            val currentList = studioDao.getComponentsForProjectSync(updatedProj.id)
+            for (comp in currentList) {
+                studioDao.updateComponent(comp)
+            }
+            _uiState.update {
+                it.copy(
+                    activeProject = updatedProj,
+                    customEditedKotlinFiles = emptyMap(),
+                    statusToast = "✅ Design Saved! (${currentList.size} widget(s) locked in for Build)"
+                )
             }
         }
     }
@@ -729,6 +763,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             _uiState.update {
                 it.copy(
                     selectedComponentId = newId,
+                    customEditedKotlinFiles = emptyMap(),
                     statusToast = "Duplicated '${component.label}'."
                 )
             }
@@ -745,6 +780,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             _uiState.update { state ->
                 state.copy(
                     selectedComponentId = if (state.selectedComponentId == componentId) null else state.selectedComponentId,
+                    customEditedKotlinFiles = emptyMap(),
                     statusToast = "Component removed from canvas."
                 )
             }
@@ -758,6 +794,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             _uiState.update {
                 it.copy(
                     selectedComponentId = null,
+                    customEditedKotlinFiles = emptyMap(),
                     statusToast = "Canvas cleared to 100% Blank state."
                 )
             }
@@ -1157,19 +1194,20 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val initialProject = _uiState.value.activeProject ?: return
         viewModelScope.launch {
             try {
-                // If the user edited Kotlin code, sync it with the visual screen components before compiling APK
-                val activeCustomFiles = customKotlinFiles ?: _uiState.value.customEditedKotlinFiles
-                var project = initialProject
-                var components = studioDao.getComponentsForProjectSync(initialProject.id)
+                // Always read the latest project and visual components from Room DB / active visual state.
+                // Only parse customKotlinFiles if explicitly passed from the "Edit Code -> Compile" action;
+                // never overwrite the user's visual design with an older cached code snapshot!
+                var project = studioDao.getProjectById(initialProject.id) ?: initialProject
+                var components = studioDao.getComponentsForProjectSync(project.id)
                     .ifEmpty { activeComponents.value }
 
-                if (activeCustomFiles.isNotEmpty() &&
-                    activeCustomFiles.containsKey("src/main/java/com/example/ui/CanvasWorkspaceComponents.kt")
+                if (customKotlinFiles != null &&
+                    customKotlinFiles.containsKey("src/main/java/com/example/ui/CanvasWorkspaceComponents.kt")
                 ) {
                     val parsed = KotlinProjectCodeEngine.parseEditedKotlinToVisualState(
                         originalProject = project,
                         originalComponents = components,
-                        editedFiles = activeCustomFiles
+                        editedFiles = customKotlinFiles
                     )
                     project = parsed.updatedProject
                     studioDao.updateProject(project)
@@ -1181,6 +1219,42 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     _uiState.update { it.copy(activeProject = project) }
                 }
 
+                // Also update DynamicOverlayRegistry immediately so in-app preview & floating service have the exact latest design
+                val latestSpecs = components.map { comp ->
+                    DynamicOverlayRegistry.OverlayItemSpec().apply {
+                        id = comp.id
+                        type = comp.type
+                        label = comp.label
+                        posXDp = comp.posXDp
+                        posYDp = comp.posYDp
+                        widthDp = comp.widthDp
+                        heightDp = comp.heightDp
+                        bgColorHex = comp.bgColorHex
+                        textColorHex = comp.textColorHex
+                        customImagePath = comp.customImagePath
+                        soundTrigger = comp.soundTrigger
+                        customSoundPath = comp.customSoundPath
+                        offSoundTrigger = comp.offSoundTrigger
+                        offCustomSoundPath = comp.offCustomSoundPath
+                        targetFilePath = comp.targetFilePath
+                        byteOffsetHex = comp.byteOffsetHex
+                        onPayloadHex = comp.onPayloadHex
+                        offPayloadHex = comp.offPayloadHex
+                        sliderMax = comp.sliderMax
+                        currentValue = comp.currentValue
+                        linkUrl = comp.linkUrl
+                    }
+                }
+                DynamicOverlayRegistry.updateActiveOverlay(
+                    project.overlayTitle,
+                    project.floatingLogoPath,
+                    project.canvasWidthDp,
+                    project.canvasHeightDp,
+                    project.canvasBgColorHex,
+                    project.autoFixSize,
+                    latestSpecs
+                )
+
                 val safeSlug = project.name.trim().lowercase(Locale.US)
                     .replace(Regex("[^a-z0-9]+"), "_")
                     .trim('_')
@@ -1189,9 +1263,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 val targetPkg = ApkCompilationEngine.getCompiledAppPackageName(project)
 
                 val blueprintFiles = ApkCompilationEngine.generateProjectBlueprintFiles(project, components).toMutableMap()
+                val activeCustomFiles = customKotlinFiles ?: _uiState.value.customEditedKotlinFiles
                 if (activeCustomFiles.isNotEmpty()) {
                     blueprintFiles.putAll(activeCustomFiles)
-                    // Ensure overlay_config.json and CanvasWorkspaceComponents.kt reflect the synced visual widgets
+                    // Ensure overlay_config.json and CanvasWorkspaceComponents.kt ALWAYS reflect the current visual widgets
                     blueprintFiles["src/main/java/com/example/ui/CanvasWorkspaceComponents.kt"] =
                         KotlinProjectCodeEngine.generateKotlinFilesForProject(project, components)[
                             "src/main/java/com/example/ui/CanvasWorkspaceComponents.kt"

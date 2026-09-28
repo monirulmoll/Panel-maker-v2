@@ -470,8 +470,11 @@ public class FloatingDashboardService extends Service {
 
                 Runnable updateVisuals = () -> {
                     boolean on = isCheckedState[0];
+                    boolean isDefaultWhite = spec.bgColorHex == null
+                            || spec.bgColorHex.trim().isEmpty()
+                            || "#FFFFFF".equalsIgnoreCase(spec.bgColorHex.trim());
                     GradientDrawable rowBg = new GradientDrawable();
-                    rowBg.setColor(on ? Color.parseColor("#ECFDF5") : bgColor);
+                    rowBg.setColor((on && isDefaultWhite) ? Color.parseColor("#ECFDF5") : bgColor);
                     rowBg.setCornerRadius(dpToPx(8));
                     rowBg.setStroke(dpToPx(2), on ? Color.parseColor("#00C853") : Color.parseColor("#64748B"));
                     row.setBackground(rowBg);

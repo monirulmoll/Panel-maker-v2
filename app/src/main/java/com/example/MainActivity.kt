@@ -49,6 +49,7 @@ import androidx.compose.material.icons.filled.Image
 import androidx.compose.material.icons.filled.InstallMobile
 import androidx.compose.material.icons.filled.Layers
 import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.Save
 import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material.icons.filled.SwapHoriz
 import androidx.compose.material3.AlertDialog
@@ -196,6 +197,7 @@ class MainActivity : ComponentActivity() {
                             },
                             onSelectComponent = viewModel::selectComponent,
                             onUpdateComponent = viewModel::updateComponent,
+                            onSaveProjectDesign = viewModel::saveCurrentProjectDesign,
                             onMoveComponent = viewModel::updateComponentPosition,
                             onResizeComponent = viewModel::resizeComponent,
                             onResizeCanvas = viewModel::resizeActiveProjectCanvas,
@@ -250,6 +252,7 @@ fun StudioCanvasBuilderScreen(
     onAddPaletteEntry: (SketchwarePaletteEntry) -> Unit,
     onSelectComponent: (Long?) -> Unit,
     onUpdateComponent: (CanvasComponentEntity) -> Unit,
+    onSaveProjectDesign: (CanvasComponentEntity?) -> Unit = {},
     onMoveComponent: (CanvasComponentEntity, Int, Int) -> Unit,
     onResizeComponent: (CanvasComponentEntity, Int, Int) -> Unit,
     onResizeCanvas: (Int, Int) -> Unit,
@@ -667,6 +670,31 @@ fun StudioCanvasBuilderScreen(
                 },
                 actions = {
                     Button(
+                        onClick = { onSaveProjectDesign(selectedComponent) },
+                        shape = RoundedCornerShape(8.dp),
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = Color(0xFF16A34A),
+                            contentColor = Color.White
+                        ),
+                        contentPadding = PaddingValues(horizontal = 9.dp, vertical = 6.dp),
+                        modifier = Modifier
+                            .padding(end = 5.dp)
+                            .testTag("save_project_design_button")
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Save,
+                            contentDescription = "Save Design",
+                            modifier = Modifier.size(14.dp)
+                        )
+                        Spacer(modifier = Modifier.width(4.dp))
+                        Text(
+                            text = "Save",
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
+
+                    Button(
                         onClick = onOpenEditCode,
                         shape = RoundedCornerShape(8.dp),
                         colors = ButtonDefaults.buttonColors(
@@ -685,7 +713,7 @@ fun StudioCanvasBuilderScreen(
                         )
                         Spacer(modifier = Modifier.width(4.dp))
                         Text(
-                            text = "Edit Code",
+                            text = "Code",
                             fontSize = 10.sp,
                             fontWeight = FontWeight.Bold
                         )
@@ -700,7 +728,7 @@ fun StudioCanvasBuilderScreen(
                         ),
                         contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
                         modifier = Modifier
-                            .padding(end = 6.dp)
+                            .padding(end = 5.dp)
                             .testTag("download_floating_window_button")
                     ) {
                         Icon(
@@ -763,6 +791,7 @@ fun StudioCanvasBuilderScreen(
                         onToggleAutoFixSize = onToggleAutoFixSize,
                         onOpenEditCode = onOpenEditCode,
                         onUpdateComponent = onUpdateComponent,
+                        onSaveDesign = { edited -> onSaveProjectDesign(edited) },
                         onPickImageUri = { uri -> onPickImageForComponent(selectedComponent, uri) },
                         onPickSoundUri = { uri, isOff -> onPickSoundForComponent(selectedComponent, uri, isOff) },
                         onDuplicateComponent = { onDuplicateComponent(selectedComponent) },
@@ -803,6 +832,7 @@ fun StudioCanvasBuilderScreen(
                 onResizeCanvas = onResizeCanvas,
                 onToggleAutoFixSize = onToggleAutoFixSize,
                 onOpenEditFloatingPanel = onOpenEditFloatingPanel,
+                onSaveDesign = { onSaveProjectDesign(selectedComponent) },
                 onTriggerComponentLive = onTriggerComponentLive,
                 onClearCanvas = onClearCanvas,
                 modifier = Modifier.weight(1f)

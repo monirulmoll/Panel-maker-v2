@@ -721,6 +721,12 @@ private fun CompiledStandaloneWidgetView(
     val bgColor = parseStandaloneColor(component.bgColorHex, Color.White)
     val textColor = parseStandaloneColor(component.textColorHex, Color(0xFF0F172A))
     val isActive = component.currentValue == "1" || component.currentValue.equals("true", ignoreCase = true)
+    val customBitmap = remember(component.customImagePath) {
+        if (component.customImagePath.isNotBlank()) {
+            val file = File(component.customImagePath.trim())
+            if (file.exists()) BitmapFactory.decodeFile(file.absolutePath)?.asImageBitmap() else null
+        } else null
+    }
 
     when (widgetType) {
         ComponentWidgetType.BUTTON -> {
@@ -738,79 +744,109 @@ private fun CompiledStandaloneWidgetView(
                 ),
                 shadowElevation = 2.dp
             ) {
-                Row(
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .padding(horizontal = 10.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.SpaceBetween
-                ) {
-                    Text(
-                        text = component.label,
-                        color = buttonTextCol,
-                        fontWeight = FontWeight.Bold,
-                        fontSize = 12.sp,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                        modifier = Modifier.weight(1f)
-                    )
-                    Surface(
-                        color = if (isActive) Color(0xFF15803D) else Color(0xFF475569),
-                        shape = RoundedCornerShape(4.dp)
+                Box(modifier = Modifier.fillMaxSize()) {
+                    if (customBitmap != null && !isActive) {
+                        Image(
+                            bitmap = customBitmap,
+                            contentDescription = component.label,
+                            contentScale = ContentScale.Crop,
+                            modifier = Modifier.fillMaxSize()
+                        )
+                    }
+                    Row(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .padding(horizontal = 10.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
                     ) {
                         Text(
-                            text = if (isActive) "ON" else "OFF",
-                            color = Color.White,
-                            fontWeight = FontWeight.ExtraBold,
-                            fontSize = 9.sp,
-                            modifier = Modifier.padding(horizontal = 5.dp, vertical = 2.dp)
+                            text = component.label,
+                            color = buttonTextCol,
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 12.sp,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.weight(1f)
                         )
+                        Surface(
+                            color = if (isActive) Color(0xFF15803D) else Color(0xFF475569),
+                            shape = RoundedCornerShape(4.dp)
+                        ) {
+                            Text(
+                                text = if (isActive) "ON" else "OFF",
+                                color = Color.White,
+                                fontWeight = FontWeight.ExtraBold,
+                                fontSize = 9.sp,
+                                modifier = Modifier.padding(horizontal = 5.dp, vertical = 2.dp)
+                            )
+                        }
                     }
                 }
             }
         }
 
         ComponentWidgetType.TOGGLE -> {
+            val toggleBg = if (isActive && component.bgColorHex.equals("#FFFFFF", ignoreCase = true)) {
+                Color(0xFFECFDF5)
+            } else {
+                bgColor
+            }
+            val toggleTextCol = if (isActive && component.bgColorHex.equals("#FFFFFF", ignoreCase = true)) {
+                Color(0xFF065F46)
+            } else {
+                textColor
+            }
             Surface(
                 modifier = modifier
                     .clip(RoundedCornerShape(8.dp))
                     .clickable { onTrigger(if (isActive) "0" else "1") },
                 shape = RoundedCornerShape(8.dp),
-                color = if (isActive) Color(0xFFECFDF5) else bgColor,
+                color = toggleBg,
                 border = BorderStroke(
                     width = if (isActive) 2.dp else 1.dp,
                     color = if (isActive) Color(0xFF00C853) else Color(0xFF94A3B8)
                 ),
                 shadowElevation = 2.dp
             ) {
-                Row(
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .padding(horizontal = 8.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.SpaceBetween
-                ) {
-                    Text(
-                        text = component.label,
-                        color = if (isActive) Color(0xFF065F46) else textColor,
-                        fontWeight = FontWeight.Bold,
-                        fontSize = 11.sp,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                        modifier = Modifier.weight(1f)
-                    )
-                    Switch(
-                        checked = isActive,
-                        onCheckedChange = { checked ->
-                            onTrigger(if (checked) "1" else "0")
-                        },
-                        colors = SwitchDefaults.colors(
-                            checkedThumbColor = Color.White,
-                            checkedTrackColor = Color(0xFF00C853),
-                            uncheckedThumbColor = Color.White,
-                            uncheckedTrackColor = Color(0xFF64748B)
+                Box(modifier = Modifier.fillMaxSize()) {
+                    if (customBitmap != null) {
+                        Image(
+                            bitmap = customBitmap,
+                            contentDescription = component.label,
+                            contentScale = ContentScale.Crop,
+                            modifier = Modifier.fillMaxSize()
                         )
-                    )
+                    }
+                    Row(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .padding(horizontal = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Text(
+                            text = component.label,
+                            color = toggleTextCol,
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 11.sp,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.weight(1f)
+                        )
+                        Switch(
+                            checked = isActive,
+                            onCheckedChange = { checked ->
+                                onTrigger(if (checked) "1" else "0")
+                            },
+                            colors = SwitchDefaults.colors(
+                                checkedThumbColor = Color.White,
+                                checkedTrackColor = Color(0xFF00C853),
+                                uncheckedThumbColor = Color.White,
+                                uncheckedTrackColor = Color(0xFF64748B)
+                            )
+                        )
+                    }
                 }
             }
         }
