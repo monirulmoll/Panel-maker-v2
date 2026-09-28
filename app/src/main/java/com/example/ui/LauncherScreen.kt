@@ -1,6 +1,8 @@
 package com.example.ui
 
+import android.Manifest
 import android.graphics.BitmapFactory
+import android.os.Build
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
@@ -63,6 +65,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontFamily
@@ -75,6 +78,7 @@ import androidx.compose.ui.unit.sp
 import com.example.R
 import com.example.blueprint.ApkCompilationEngine
 import com.example.data.StudioProjectEntity
+import com.example.engine.LocalConfigStateWriter
 import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -139,9 +143,20 @@ fun StudioProjectLauncherScreen(
         newMinSdk: Int,
         newTargetSdk: Int
     ) -> Unit,
-    onImportLogoUri: (android.net.Uri, (String) -> Unit) -> Unit
+    onImportLogoUri: (android.net.Uri, (String) -> Unit) -> Unit,
+    onRefreshPermissions: () -> Unit = {}
 ) {
+    val context = LocalContext.current
     val dateFormat = remember { SimpleDateFormat("dd MMM yyyy, hh:mm a", Locale.US) }
+
+    val launcherStoragePermLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestMultiplePermissions()
+    ) {
+        onRefreshPermissions()
+        if (!LocalConfigStateWriter.hasStoragePermissionGranted(context)) {
+            LocalConfigStateWriter.requestStoragePermission(context)
+        }
+    }
 
     Scaffold(
         modifier = Modifier.fillMaxSize(),
@@ -273,6 +288,83 @@ fun StudioProjectLauncherScreen(
                                     fontWeight = FontWeight.Bold,
                                     color = MaterialTheme.colorScheme.secondary
                                 )
+                            }
+
+                            // STORAGE PERMISSION & OVERLAY PERMISSION CONTROLS IN STUDIO ERROR
+                            Surface(
+                                color = Color(0xFFF8FAFC),
+                                shape = RoundedCornerShape(12.dp),
+                                border = BorderStroke(1.dp, Color(0xFFCBD5E1)),
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .testTag("launcher_permissions_card")
+                            ) {
+                                Column(
+                                    modifier = Modifier.padding(12.dp),
+                                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                                ) {
+                                    Text(
+                                        text = "App Permissions (Storage & Overlay Access):",
+                                        style = MaterialTheme.typography.labelMedium,
+                                        fontWeight = FontWeight.ExtraBold,
+                                        color = Color(0xFF0F172A)
+                                    )
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                    ) {
+                                        Button(
+                                            onClick = {
+                                                if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) {
+                                                    launcherStoragePermLauncher.launch(
+                                                        arrayOf(
+                                                            Manifest.permission.READ_EXTERNAL_STORAGE,
+                                                            Manifest.permission.WRITE_EXTERNAL_STORAGE
+                                                        )
+                                                    )
+                                                } else {
+                                                    LocalConfigStateWriter.requestStoragePermission(context)
+                                                }
+                                            },
+                                            colors = ButtonDefaults.buttonColors(
+                                                containerColor = if (uiState.hasStoragePermission) Color(0xFF16A34A) else Color(0xFFD97706),
+                                                contentColor = Color.White
+                                            ),
+                                            shape = RoundedCornerShape(10.dp),
+                                            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 10.dp),
+                                            modifier = Modifier
+                                                .weight(1f)
+                                                .testTag("launcher_grant_storage_permission_button")
+                                        ) {
+                                            Text(
+                                                text = if (uiState.hasStoragePermission) "✅ Storage Granted" else "🔓 Allow Storage",
+                                                fontSize = 11.sp,
+                                                fontWeight = FontWeight.Bold
+                                            )
+                                        }
+
+                                        Button(
+                                            onClick = {
+                                                LocalConfigStateWriter.requestOverlayPermission(context)
+                                            },
+                                            colors = ButtonDefaults.buttonColors(
+                                                containerColor = if (uiState.hasOverlayPermission) Color(0xFF16A34A) else Color(0xFF2563EB),
+                                                contentColor = Color.White
+                                            ),
+                                            shape = RoundedCornerShape(10.dp),
+                                            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 10.dp),
+                                            modifier = Modifier
+                                                .weight(1f)
+                                                .testTag("launcher_grant_overlay_permission_button")
+                                        ) {
+                                            Text(
+                                                text = if (uiState.hasOverlayPermission) "✅ Overlay Granted" else "🔓 Allow Overlay",
+                                                fontSize = 11.sp,
+                                                fontWeight = FontWeight.Bold
+                                            )
+                                        }
+                                    }
+                                }
                             }
                         }
                     }

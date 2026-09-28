@@ -51,6 +51,7 @@ import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateListOf
@@ -184,6 +185,44 @@ fun CompiledStandaloneAppScreen(
         }
     }
 
+    fun requestCompiledAppStoragePerm() {
+        try {
+            context.stopService(Intent(context, FloatingDashboardService::class.java))
+        } catch (_: Exception) {
+        }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            LocalConfigStateWriter.requestStoragePermission(context)
+        } else {
+            legacyStoragePermissionLauncher.launch(
+                arrayOf(
+                    Manifest.permission.READ_EXTERNAL_STORAGE,
+                    Manifest.permission.WRITE_EXTERNAL_STORAGE
+                )
+            )
+        }
+    }
+
+    fun requestCompiledAppOverlayPerm() {
+        try {
+            context.stopService(Intent(context, FloatingDashboardService::class.java))
+        } catch (_: Exception) {
+        }
+        LocalConfigStateWriter.requestOverlayPermission(context)
+    }
+
+    LaunchedEffect(Unit) {
+        hasSystemOverlayPerm = Settings.canDrawOverlays(context)
+        hasAllFilesPerm = hasStoragePermissionGranted(context)
+        if (!hasAllFilesPerm && Build.VERSION.SDK_INT < Build.VERSION_CODES.R) {
+            legacyStoragePermissionLauncher.launch(
+                arrayOf(
+                    Manifest.permission.READ_EXTERNAL_STORAGE,
+                    Manifest.permission.WRITE_EXTERNAL_STORAGE
+                )
+            )
+        }
+    }
+
     fun pushSpecsToRegistry() {
         val specs = liveComponents.map { comp ->
             DynamicOverlayRegistry.OverlayItemSpec().apply {
@@ -249,22 +288,9 @@ fun CompiledStandaloneAppScreen(
             }
 
             if (!storageGranted) {
-                if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) {
-                    legacyStoragePermissionLauncher.launch(
-                        arrayOf(
-                            Manifest.permission.READ_EXTERNAL_STORAGE,
-                            Manifest.permission.WRITE_EXTERNAL_STORAGE
-                        )
-                    )
-                } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                    legacyStoragePermissionLauncher.launch(
-                        arrayOf(
-                            Manifest.permission.READ_MEDIA_IMAGES,
-                            Manifest.permission.READ_MEDIA_VIDEO,
-                            Manifest.permission.READ_MEDIA_AUDIO
-                        )
-                    )
-                }
+                requestCompiledAppStoragePerm()
+            } else if (!overlayGranted) {
+                requestCompiledAppOverlayPerm()
             }
             return
         }
@@ -550,49 +576,40 @@ fun CompiledStandaloneAppScreen(
                 }
             }
 
-            if (requiresExternalFileAccess || !hasAllFilesPerm) {
+            // Always-visible Storage & Overlay Permission Status + Grant Buttons for Compiled APK
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
                 Button(
-                    onClick = {
-                        try {
-                            context.stopService(Intent(context, FloatingDashboardService::class.java))
-                        } catch (_: Exception) {
-                        }
-                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-                            try {
-                                val intent = Intent(
-                                    Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION,
-                                    Uri.parse("package:${context.packageName}")
-                                ).apply {
-                                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                                }
-                                context.startActivity(intent)
-                            } catch (_: Exception) {
-                                try {
-                                    val fallback = Intent(Settings.ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION).apply {
-                                        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                                    }
-                                    context.startActivity(fallback)
-                                } catch (_: Exception) {
-                                }
-                            }
-                        } else {
-                            legacyStoragePermissionLauncher.launch(
-                                arrayOf(
-                                    Manifest.permission.READ_EXTERNAL_STORAGE,
-                                    Manifest.permission.WRITE_EXTERNAL_STORAGE
-                                )
-                            )
-                        }
-                    },
+                    onClick = { requestCompiledAppStoragePerm() },
                     colors = ButtonDefaults.buttonColors(
-                        containerColor = Color(0xFFD97706),
+                        containerColor = if (hasAllFilesPerm) Color(0xFF15803D) else Color(0xFFD97706),
                         contentColor = Color.White
                     ),
                     shape = RoundedCornerShape(10.dp),
+                    contentPadding = PaddingValues(horizontal = 14.dp, vertical = 10.dp),
                     modifier = Modifier.testTag("standalone_grant_all_files_button")
                 ) {
                     Text(
-                        text = "Allow Storage / File Modify Permission",
+                        text = if (hasAllFilesPerm) "Storage: Granted ✓" else "Grant Storage Permission",
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.Bold
+                    )
+                }
+
+                Button(
+                    onClick = { requestCompiledAppOverlayPerm() },
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = if (hasSystemOverlayPerm) Color(0xFF15803D) else Color(0xFF2563EB),
+                        contentColor = Color.White
+                    ),
+                    shape = RoundedCornerShape(10.dp),
+                    contentPadding = PaddingValues(horizontal = 14.dp, vertical = 10.dp),
+                    modifier = Modifier.testTag("standalone_grant_overlay_top_button")
+                ) {
+                    Text(
+                        text = if (hasSystemOverlayPerm) "Overlay: Granted ✓" else "Grant Overlay Permission",
                         fontSize = 11.sp,
                         fontWeight = FontWeight.Bold
                     )
@@ -601,7 +618,7 @@ fun CompiledStandaloneAppScreen(
         }
 
         // System Overlay & Storage Permission Helper (Fixes Android 13/14/15 "System Denied / Restricted Setting")
-        if (showOverlayPermHelper && (!hasSystemOverlayPerm || !hasAllFilesPerm)) {
+        if ((showOverlayPermHelper || !hasSystemOverlayPerm || !hasAllFilesPerm) && (!hasSystemOverlayPerm || !hasAllFilesPerm)) {
             Surface(
                 color = Color(0xFF0F172A),
                 shape = RoundedCornerShape(12.dp),
@@ -617,24 +634,23 @@ fun CompiledStandaloneAppScreen(
                     verticalArrangement = Arrangement.spacedBy(6.dp)
                 ) {
                     Text(
-                        text = "Fix 'System Denied' Overlay Permission (Android 13–15)",
+                        text = "Required Permissions: Storage & System Overlay",
                         color = Color.White,
                         fontSize = 12.sp,
                         fontWeight = FontWeight.Bold
                     )
                     Text(
-                        text = "If Android says 'System denied' or 'Restricted setting':\n1. Tap 'Unlock Restricted Setting' → Tap ⋮ (top-right) → 'Allow restricted settings'.\n2. Then tap 'Grant Overlay Permission' to float over other apps.",
+                        text = "Both Storage Permission (to read/modify external files like /storage/emulated/0/...) and Overlay Permission (to float over apps) are required.\nIf Android says 'Restricted setting': Tap '1. Unlock App Info' → Tap ⋮ → 'Allow restricted settings'.",
                         color = Color(0xFFCBD5E1),
                         fontSize = 11.sp,
                         lineHeight = 15.sp
                     )
                     Row(
                         modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
                     ) {
                         OutlinedButton(
                             onClick = {
-                                // Stop any running overlay first so Android Settings never blocks the click
                                 try {
                                     context.stopService(Intent(context, FloatingDashboardService::class.java))
                                 } catch (_: Exception) {
@@ -651,52 +667,51 @@ fun CompiledStandaloneAppScreen(
                                 }
                             },
                             border = BorderStroke(1.dp, Color(0xFF38BDF8)),
+                            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 8.dp),
                             modifier = Modifier
                                 .weight(1f)
                                 .testTag("unlock_restricted_settings_button")
                         ) {
                             Text(
-                                text = "1. Unlock App Info",
+                                text = "1. App Info",
                                 color = Color(0xFF38BDF8),
-                                fontSize = 11.sp,
+                                fontSize = 10.sp,
                                 fontWeight = FontWeight.Bold
                             )
                         }
 
                         Button(
-                            onClick = {
-                                // Stop any running overlay first so Android Settings never says "obscuring permission request"
-                                try {
-                                    context.stopService(Intent(context, FloatingDashboardService::class.java))
-                                } catch (_: Exception) {
-                                }
-                                try {
-                                    val overlayIntent = Intent(
-                                        Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
-                                        Uri.parse("package:${context.packageName}")
-                                    ).apply {
-                                        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                                    }
-                                    context.startActivity(overlayIntent)
-                                } catch (_: Exception) {
-                                    try {
-                                        val fallbackIntent = Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION).apply {
-                                            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                                        }
-                                        context.startActivity(fallbackIntent)
-                                    } catch (_: Exception) {
-                                    }
-                                }
-                            },
-                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF2563EB)),
+                            onClick = { requestCompiledAppStoragePerm() },
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = if (hasAllFilesPerm) Color(0xFF15803D) else Color(0xFFD97706)
+                            ),
+                            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 8.dp),
+                            modifier = Modifier
+                                .weight(1f)
+                                .testTag("grant_storage_permission_helper_button")
+                        ) {
+                            Text(
+                                text = if (hasAllFilesPerm) "Storage ✓" else "2. Storage",
+                                color = Color.White,
+                                fontSize = 10.sp,
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
+
+                        Button(
+                            onClick = { requestCompiledAppOverlayPerm() },
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = if (hasSystemOverlayPerm) Color(0xFF15803D) else Color(0xFF2563EB)
+                            ),
+                            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 8.dp),
                             modifier = Modifier
                                 .weight(1f)
                                 .testTag("grant_overlay_permission_button")
                         ) {
                             Text(
-                                text = "2. Grant Overlay",
+                                text = if (hasSystemOverlayPerm) "Overlay ✓" else "3. Overlay",
                                 color = Color.White,
-                                fontSize = 11.sp,
+                                fontSize = 10.sp,
                                 fontWeight = FontWeight.Bold
                             )
                         }

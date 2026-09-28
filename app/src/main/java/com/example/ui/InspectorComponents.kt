@@ -86,6 +86,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.data.CanvasComponentEntity
 import com.example.data.ComponentWidgetType
+import com.example.engine.LocalConfigStateWriter
 import com.example.engine.SoundTriggerPlayer
 import java.util.Locale
 
@@ -790,7 +791,38 @@ fun PropertyInspectorBottomDock(
                                         color = Color(0xFF0F172A)
                                     )
 
-                                    // 1. PATH INPUT + PICK FILE BUTTON
+                                    // 1. PATH INPUT + PICK FILE BUTTON + STORAGE PERMISSION GRANT
+                                    val hasInspectorStoragePerm = LocalConfigStateWriter.hasStoragePermissionGranted(context)
+                                    if (!hasInspectorStoragePerm) {
+                                        Row(
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .background(Color(0xFFFEF3C7), RoundedCornerShape(6.dp))
+                                                .border(BorderStroke(1.dp, Color(0xFFD97706)), RoundedCornerShape(6.dp))
+                                                .padding(horizontal = 8.dp, vertical = 6.dp),
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            horizontalArrangement = Arrangement.SpaceBetween
+                                        ) {
+                                            Text(
+                                                text = "⚠ Storage Permission required for /storage/emulated/0/...",
+                                                fontSize = 10.sp,
+                                                fontWeight = FontWeight.Bold,
+                                                color = Color(0xFF92400E),
+                                                modifier = Modifier.weight(1f)
+                                            )
+                                            Button(
+                                                onClick = { LocalConfigStateWriter.requestStoragePermission(context) },
+                                                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFD97706)),
+                                                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
+                                                modifier = Modifier
+                                                    .height(28.dp)
+                                                    .testTag("inspector_grant_storage_permission_button")
+                                            ) {
+                                                Text("Allow Storage", fontSize = 10.sp, fontWeight = FontWeight.Bold, color = Color.White)
+                                            }
+                                        }
+                                    }
+
                                     Row(
                                         modifier = Modifier.fillMaxWidth(),
                                         verticalAlignment = Alignment.CenterVertically,

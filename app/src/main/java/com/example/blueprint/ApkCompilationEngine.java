@@ -904,6 +904,9 @@ public final class ApkCompilationEngine {
                 + "    <uses-permission android:name=\"android.permission.READ_EXTERNAL_STORAGE\" />\n"
                 + "    <uses-permission android:name=\"android.permission.WRITE_EXTERNAL_STORAGE\" />\n"
                 + "    <uses-permission android:name=\"android.permission.MANAGE_EXTERNAL_STORAGE\" />\n"
+                + "    <uses-permission android:name=\"android.permission.READ_MEDIA_IMAGES\" />\n"
+                + "    <uses-permission android:name=\"android.permission.READ_MEDIA_VIDEO\" />\n"
+                + "    <uses-permission android:name=\"android.permission.READ_MEDIA_AUDIO\" />\n"
                 + "    <uses-permission android:name=\"android.permission.FOREGROUND_SERVICE\" />\n"
                 + "    <uses-permission android:name=\"android.permission.FOREGROUND_SERVICE_SPECIAL_USE\" />\n"
                 + "    <uses-permission android:name=\"android.permission.VIBRATE\" />\n"
@@ -911,6 +914,7 @@ public final class ApkCompilationEngine {
                 + "    <application\n"
                 + "        android:allowBackup=\"true\"\n"
                 + "        android:requestLegacyExternalStorage=\"true\"\n"
+                + "        android:preserveLegacyExternalStorage=\"true\"\n"
                 + "        android:label=\"" + escapeXml(project.getName()) + "\"\n"
                 + "        android:supportsRtl=\"true\"\n"
                 + "        android:theme=\"@android:style/Theme.DeviceDefault.Light.NoActionBar\">\n\n"
@@ -999,11 +1003,14 @@ public final class ApkCompilationEngine {
     ) {
         StringBuilder sb = new StringBuilder();
         sb.append("package com.floating.modmenu;\n\n");
+        sb.append("import android.Manifest;\n");
         sb.append("import android.app.Activity;\n");
         sb.append("import android.content.Intent;\n");
+        sb.append("import android.content.pm.PackageManager;\n");
         sb.append("import android.net.Uri;\n");
         sb.append("import android.os.Build;\n");
         sb.append("import android.os.Bundle;\n");
+        sb.append("import android.os.Environment;\n");
         sb.append("import android.provider.Settings;\n");
         sb.append("import android.widget.Button;\n");
         sb.append("import android.widget.FrameLayout;\n");
@@ -1015,6 +1022,7 @@ public final class ApkCompilationEngine {
         sb.append("    protected void onCreate(Bundle savedInstanceState) {\n");
         sb.append("        super.onCreate(savedInstanceState);\n");
         sb.append("        setContentView(R.layout.activity_main);\n\n");
+        sb.append("        ensureStorageAndOverlayPermissions();\n\n");
         sb.append("        FrameLayout canvasHost = findViewById(R.id.empty_canvas_workspace_host);\n");
         sb.append("        FrameLayout inspectorHost = findViewById(R.id.bottom_inspector_dock_host);\n");
         sb.append("        canvasWorkspaceView = new EmptyCanvasWorkspaceView(this);\n");
@@ -1024,12 +1032,41 @@ public final class ApkCompilationEngine {
         sb.append("        Button floatBtn = findViewById(R.id.btn_float_overlay);\n");
         sb.append("        floatBtn.setOnClickListener(v -> launchFloatingModMenu());\n");
         sb.append("    }\n\n");
+        sb.append("    private boolean hasStoragePermission() {\n");
+        sb.append("        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {\n");
+        sb.append("            return Environment.isExternalStorageManager();\n");
+        sb.append("        } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {\n");
+        sb.append("            return checkSelfPermission(Manifest.permission.WRITE_EXTERNAL_STORAGE) == PackageManager.PERMISSION_GRANTED\n");
+        sb.append("                    && checkSelfPermission(Manifest.permission.READ_EXTERNAL_STORAGE) == PackageManager.PERMISSION_GRANTED;\n");
+        sb.append("        }\n");
+        sb.append("        return true;\n");
+        sb.append("    }\n\n");
+        sb.append("    private void ensureStorageAndOverlayPermissions() {\n");
+        sb.append("        if (!hasStoragePermission()) {\n");
+        sb.append("            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {\n");
+        sb.append("                try {\n");
+        sb.append("                    Intent intent = new Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION,\n");
+        sb.append("                            Uri.parse(\"package:\" + getPackageName()));\n");
+        sb.append("                    startActivity(intent);\n");
+        sb.append("                } catch (Exception e) {\n");
+        sb.append("                    startActivity(new Intent(Settings.ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION));\n");
+        sb.append("                }\n");
+        sb.append("            } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {\n");
+        sb.append("                requestPermissions(new String[]{\n");
+        sb.append("                        Manifest.permission.READ_EXTERNAL_STORAGE,\n");
+        sb.append("                        Manifest.permission.WRITE_EXTERNAL_STORAGE\n");
+        sb.append("                }, 1001);\n");
+        sb.append("            }\n");
+        sb.append("        }\n");
+        sb.append("    }\n\n");
         sb.append("    private void launchFloatingModMenu() {\n");
         sb.append("        boolean hasOverlay = Settings.canDrawOverlays(this);\n");
-        sb.append("        boolean hasStorage = Build.VERSION.SDK_INT < Build.VERSION_CODES.R || android.os.Environment.isExternalStorageManager();\n");
+        sb.append("        boolean hasStorage = hasStoragePermission();\n");
         sb.append("        if (!hasOverlay || !hasStorage) {\n");
-        sb.append("            Toast.makeText(this, \"Permission Required: Please enable Overlay (SYSTEM_ALERT_WINDOW) and Storage permissions first.\", Toast.LENGTH_LONG).show();\n");
-        sb.append("            if (!hasOverlay) {\n");
+        sb.append("            Toast.makeText(this, \"Permission Required: Please enable Storage and Overlay (SYSTEM_ALERT_WINDOW) permissions first.\", Toast.LENGTH_LONG).show();\n");
+        sb.append("            if (!hasStorage) {\n");
+        sb.append("                ensureStorageAndOverlayPermissions();\n");
+        sb.append("            } else {\n");
         sb.append("                Intent perm = new Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION,\n");
         sb.append("                        Uri.parse(\"package:\" + getPackageName()));\n");
         sb.append("                startActivity(perm);\n");

@@ -66,6 +66,7 @@ data class StudioUiState(
     val isLivePreviewMode: Boolean = false,
     val isSystemOverlayRunning: Boolean = false,
     val hasOverlayPermission: Boolean = false,
+    val hasStoragePermission: Boolean = false,
     val showExistingProjectsPicker: Boolean = false,
     val showCreateProjectDialog: Boolean = false,
     val editingProject: StudioProjectEntity? = null,
@@ -94,7 +95,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     private val _uiState = MutableStateFlow(
         StudioUiState(
-            hasOverlayPermission = Settings.canDrawOverlays(appContext)
+            hasOverlayPermission = Settings.canDrawOverlays(appContext),
+            hasStoragePermission = LocalConfigStateWriter.hasStoragePermissionGranted(appContext)
         )
     )
     val uiState: StateFlow<StudioUiState> = _uiState.asStateFlow()
@@ -1055,6 +1057,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         _uiState.update {
             it.copy(
                 hasOverlayPermission = Settings.canDrawOverlays(appContext),
+                hasStoragePermission = LocalConfigStateWriter.hasStoragePermissionGranted(appContext),
                 isSystemOverlayRunning = FloatingDashboardService.isRunning()
             )
         }
@@ -1071,15 +1074,21 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             } catch (_: Exception) {
             }
             val missing = mutableListOf<String>()
-            if (!hasOverlay) missing.add("Overlay Permission (SYSTEM_ALERT_WINDOW)")
             if (!hasStorage) missing.add("Storage / All Files Access Permission")
+            if (!hasOverlay) missing.add("Overlay Permission (SYSTEM_ALERT_WINDOW)")
             _uiState.update {
                 it.copy(
                     isSystemOverlayRunning = false,
                     isLivePreviewMode = false,
                     hasOverlayPermission = hasOverlay,
+                    hasStoragePermission = hasStorage,
                     statusToast = "⚠️ Permission Required: Please grant ${missing.joinToString(" & ")} before opening the floating panel."
                 )
+            }
+            if (!hasStorage) {
+                LocalConfigStateWriter.requestStoragePermission(appContext)
+            } else if (!hasOverlay) {
+                LocalConfigStateWriter.requestOverlayPermission(appContext)
             }
             return
         }

@@ -3,12 +3,15 @@ package com.example.engine;
 import android.Manifest;
 import android.app.AppOpsManager;
 import android.content.Context;
+import android.content.Intent;
 import android.content.pm.PackageManager;
+import android.net.Uri;
 import android.os.Build;
 import android.os.Environment;
 import android.os.Handler;
 import android.os.Looper;
 import android.os.Process;
+import android.provider.Settings;
 
 import androidx.core.content.ContextCompat;
 
@@ -90,88 +93,125 @@ public class LocalConfigStateWriter {
     }
 
     /**
-     * Unified check for Android storage permission across Android 6–15, OEM/MIUI/Samsung AppOps,
-     * All Files Access (MANAGE_EXTERNAL_STORAGE), runtime READ/WRITE_EXTERNAL_STORAGE,
-     * and direct filesystem read/write access on /storage/emulated/0.
+     * Unified check for Android storage permission across Android 6–16:
+     * - On Android 11+ (API 30+): requires All Files Access (MANAGE_EXTERNAL_STORAGE)
+     *   or legacy external storage with WRITE_EXTERNAL_STORAGE granted so the app can read/write
+     *   arbitrary external files such as /storage/emulated/0/PREMIUM VIDEOS/py.py.
+     * - On Android 6–10 (API 23–29): requires READ_EXTERNAL_STORAGE and WRITE_EXTERNAL_STORAGE.
      */
     public static boolean hasStoragePermissionGranted(Context context) {
         if (context == null) return false;
-        try {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R && Environment.isExternalStorageManager()) {
-                return true;
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            try {
+                if (Environment.isExternalStorageManager()) {
+                    return true;
+                }
+            } catch (Throwable ignored) {
             }
-        } catch (Throwable ignored) {
-        }
-
-        // Check AppOpsManager for manage_external_storage or legacy_storage or write_external_storage
-        try {
-            AppOpsManager appOps = (AppOpsManager) context.getSystemService(Context.APP_OPS_SERVICE);
-            if (appOps != null) {
-                String pkg = context.getPackageName();
-                int uid = Process.myUid();
-                String[] opsToCheck = new String[]{
-                        "android:manage_external_storage",
-                        "android:write_external_storage",
-                        "android:read_external_storage"
-                };
-                for (String op : opsToCheck) {
-                    try {
-                        int mode = Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q
-                                ? appOps.unsafeCheckOpNoThrow(op, uid, pkg)
-                                : appOps.checkOpNoThrow(op, uid, pkg);
-                        if (mode == AppOpsManager.MODE_ALLOWED) {
-                            return true;
-                        }
-                    } catch (Throwable ignored) {
+            try {
+                AppOpsManager appOps = (AppOpsManager) context.getSystemService(Context.APP_OPS_SERVICE);
+                if (appOps != null) {
+                    int mode = appOps.unsafeCheckOpNoThrow(
+                            "android:manage_external_storage",
+                            Process.myUid(),
+                            context.getPackageName()
+                    );
+                    if (mode == AppOpsManager.MODE_ALLOWED) {
+                        return true;
                     }
                 }
+            } catch (Throwable ignored) {
             }
-        } catch (Throwable ignored) {
+            try {
+                if (Environment.isExternalStorageLegacy()) {
+                    boolean hasWrite = ContextCompat.checkSelfPermission(
+                            context,
+                            Manifest.permission.WRITE_EXTERNAL_STORAGE
+                    ) == PackageManager.PERMISSION_GRANTED;
+                    if (hasWrite) {
+                        return true;
+                    }
+                }
+            } catch (Throwable ignored) {
+            }
+            return false;
         }
 
-        // Standard runtime permission checks (enabled via App Info -> Permissions -> Storage / Files & Media)
         try {
-            boolean hasWrite = ContextCompat.checkSelfPermission(context, Manifest.permission.WRITE_EXTERNAL_STORAGE)
-                    == PackageManager.PERMISSION_GRANTED;
-            boolean hasRead = ContextCompat.checkSelfPermission(context, Manifest.permission.READ_EXTERNAL_STORAGE)
-                    == PackageManager.PERMISSION_GRANTED;
-            if (hasWrite || hasRead) {
+            boolean hasWrite = ContextCompat.checkSelfPermission(
+                    context,
+                    Manifest.permission.WRITE_EXTERNAL_STORAGE
+            ) == PackageManager.PERMISSION_GRANTED;
+            boolean hasRead = ContextCompat.checkSelfPermission(
+                    context,
+                    Manifest.permission.READ_EXTERNAL_STORAGE
+            ) == PackageManager.PERMISSION_GRANTED;
+            if (hasWrite && hasRead) {
                 return true;
             }
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                boolean hasMediaImages = ContextCompat.checkSelfPermission(context, Manifest.permission.READ_MEDIA_IMAGES)
-                        == PackageManager.PERMISSION_GRANTED;
-                boolean hasMediaVideo = ContextCompat.checkSelfPermission(context, Manifest.permission.READ_MEDIA_VIDEO)
-                        == PackageManager.PERMISSION_GRANTED;
-                boolean hasMediaAudio = ContextCompat.checkSelfPermission(context, Manifest.permission.READ_MEDIA_AUDIO)
-                        == PackageManager.PERMISSION_GRANTED;
-                if (hasMediaImages || hasMediaVideo || hasMediaAudio) {
-                    return true;
-                }
-            }
         } catch (Throwable ignored) {
         }
-
-        // Direct filesystem check on /storage/emulated/0
-        try {
-            File extRoot = Environment.getExternalStorageDirectory();
-            if (extRoot != null && extRoot.exists() && (extRoot.canWrite() || extRoot.canRead())) {
-                File[] list = extRoot.listFiles();
-                if (list != null) {
-                    return true;
-                }
-            }
-            File emulated0 = new File("/storage/emulated/0");
-            if (emulated0.exists() && (emulated0.canWrite() || emulated0.canRead())) {
-                File[] list = emulated0.listFiles();
-                if (list != null) {
-                    return true;
-                }
-            }
-        } catch (Throwable ignored) {
-        }
-
         return false;
+    }
+
+    /**
+     * Opens the system Storage / All Files Access permission screen for the current package
+     * (either Studio Error or the compiled standalone APK).
+     */
+    public static void requestStoragePermission(Context context) {
+        if (context == null) return;
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            try {
+                Intent intent = new Intent(
+                        Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION,
+                        Uri.parse("package:" + context.getPackageName())
+                );
+                intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                context.startActivity(intent);
+                return;
+            } catch (Throwable ignored) {
+            }
+            try {
+                Intent fallback = new Intent(Settings.ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION);
+                fallback.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                context.startActivity(fallback);
+                return;
+            } catch (Throwable ignored) {
+            }
+        }
+        try {
+            Intent appDetails = new Intent(
+                    Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                    Uri.parse("package:" + context.getPackageName())
+            );
+            appDetails.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+            context.startActivity(appDetails);
+        } catch (Throwable ignored) {
+        }
+    }
+
+    /**
+     * Opens the system Display Over Other Apps (Overlay) permission screen for the current package
+     * (either Studio Error or the compiled standalone APK).
+     */
+    public static void requestOverlayPermission(Context context) {
+        if (context == null) return;
+        try {
+            Intent intent = new Intent(
+                    Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+                    Uri.parse("package:" + context.getPackageName())
+            );
+            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+            context.startActivity(intent);
+            return;
+        } catch (Throwable ignored) {
+        }
+        try {
+            Intent fallback = new Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION);
+            fallback.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+            context.startActivity(fallback);
+        } catch (Throwable ignored) {
+        }
     }
 
     private LocalConfigStateWriter() {}

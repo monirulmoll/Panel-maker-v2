@@ -1,8 +1,10 @@
 package com.example
 
+import android.Manifest
 import android.content.Intent
 import android.graphics.BitmapFactory
 import android.net.Uri
+import android.os.Build
 import android.os.Bundle
 import android.provider.Settings
 import androidx.activity.ComponentActivity
@@ -90,6 +92,7 @@ import androidx.compose.ui.unit.sp
 import java.io.File
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.data.CanvasComponentEntity
+import com.example.engine.LocalConfigStateWriter
 import com.example.ui.CompiledStandaloneAppScreen
 import com.example.ui.ComponentCountSummary
 import com.example.ui.ComponentTrackerBanner
@@ -159,7 +162,8 @@ class MainActivity : ComponentActivity() {
                             onOpenEditProjectDialog = { proj -> viewModel.openEditProjectDialog(proj) },
                             onDismissEditProjectDialog = { viewModel.openEditProjectDialog(null) },
                             onSaveProjectConfiguration = viewModel::updateProjectNameAndLogo,
-                            onImportLogoUri = viewModel::importProjectLogoUri
+                            onImportLogoUri = viewModel::importProjectLogoUri,
+                            onRefreshPermissions = viewModel::refreshOverlayPermission
                         )
                     }
 
@@ -226,7 +230,8 @@ class MainActivity : ComponentActivity() {
                             onSaveFloatingWindowToUri = viewModel::saveFloatingWindowToCustomUri,
                             onDismissDownloadDialog = viewModel::dismissDownloadSummaryDialog,
                             onLaunchSystemOverlay = viewModel::launchSystemFloatingOverlay,
-                            onStopSystemOverlay = viewModel::stopSystemFloatingOverlay
+                            onStopSystemOverlay = viewModel::stopSystemFloatingOverlay,
+                            onRefreshPermissions = viewModel::refreshOverlayPermission
                         )
                     }
                 }
@@ -277,12 +282,22 @@ fun StudioCanvasBuilderScreen(
     onSaveFloatingWindowToUri: (Uri) -> Unit,
     onDismissDownloadDialog: () -> Unit,
     onLaunchSystemOverlay: () -> Unit,
-    onStopSystemOverlay: () -> Unit
+    onStopSystemOverlay: () -> Unit,
+    onRefreshPermissions: () -> Unit = {}
 ) {
     val context = LocalContext.current
     val project = uiState.activeProject ?: return
     val selectedComponent = remember(components, uiState.selectedComponentId) {
         components.find { it.id == uiState.selectedComponentId }
+    }
+
+    val runtimeStoragePermissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestMultiplePermissions()
+    ) {
+        onRefreshPermissions()
+        if (!LocalConfigStateWriter.hasStoragePermissionGranted(context)) {
+            LocalConfigStateWriter.requestStoragePermission(context)
+        }
     }
 
     val createDocumentLauncher = rememberLauncherForActivityResult(
@@ -817,45 +832,62 @@ fun StudioCanvasBuilderScreen(
                 modifier = Modifier.weight(1f)
             )
 
-            if (!uiState.hasOverlayPermission && selectedComponent == null) {
+            if ((!uiState.hasOverlayPermission || !uiState.hasStoragePermission) && selectedComponent == null) {
                 Surface(
                     color = Color(0xFFF8FAFC),
                     border = BorderStroke(1.dp, Color(0xFFCBD5E1)),
-                    modifier = Modifier.fillMaxWidth()
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .testTag("studio_workspace_permissions_bar")
                 ) {
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .padding(horizontal = 12.dp, vertical = 6.dp),
+                            .padding(horizontal = 10.dp, vertical = 6.dp),
                         verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.SpaceBetween
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
                         Text(
-                            text = "Grant Overlay Permission to float your custom window over other Android apps",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = Color(0xFF475569),
-                            fontSize = 11.sp,
+                            text = "Permissions Needed:",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = Color(0xFF0F172A),
+                            fontWeight = FontWeight.ExtraBold,
                             modifier = Modifier.weight(1f)
                         )
-                        TextButton(
-                            onClick = {
-                                try {
-                                    val intent = Intent(
-                                        Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
-                                        Uri.parse("package:${context.packageName}")
-                                    )
-                                    context.startActivity(intent)
-                                } catch (_: Exception) {
-                                }
+                        if (!uiState.hasStoragePermission) {
+                            Button(
+                                onClick = {
+                                    if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) {
+                                        runtimeStoragePermissionLauncher.launch(
+                                            arrayOf(
+                                                Manifest.permission.READ_EXTERNAL_STORAGE,
+                                                Manifest.permission.WRITE_EXTERNAL_STORAGE
+                                            )
+                                        )
+                                    } else {
+                                        LocalConfigStateWriter.requestStoragePermission(context)
+                                    }
+                                },
+                                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFD97706)),
+                                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
+                                shape = RoundedCornerShape(8.dp),
+                                modifier = Modifier.testTag("workspace_grant_storage_button")
+                            ) {
+                                Text("Allow Storage", fontSize = 11.sp, fontWeight = FontWeight.Bold)
                             }
-                        ) {
-                            Icon(
-                                imageVector = Icons.AutoMirrored.Filled.OpenInNew,
-                                contentDescription = "Overlay Permission",
-                                modifier = Modifier.size(14.dp)
-                            )
-                            Spacer(modifier = Modifier.width(4.dp))
-                            Text("Grant", fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                        }
+                        if (!uiState.hasOverlayPermission) {
+                            Button(
+                                onClick = {
+                                    LocalConfigStateWriter.requestOverlayPermission(context)
+                                },
+                                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF2563EB)),
+                                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
+                                shape = RoundedCornerShape(8.dp),
+                                modifier = Modifier.testTag("workspace_grant_overlay_button")
+                            ) {
+                                Text("Allow Overlay", fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                            }
                         }
                     }
                 }
