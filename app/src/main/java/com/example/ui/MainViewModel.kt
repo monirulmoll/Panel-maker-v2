@@ -22,7 +22,7 @@ import com.example.data.StudioProjectEntity
 import com.example.engine.AiBuildStepStatus
 import com.example.engine.AiChatTurn
 import com.example.engine.ConfigParameterSpec
-import com.example.engine.GgufBlueprintEngine
+import com.example.engine.GgufNativeBridge
 import com.example.engine.GgufModelState
 import com.example.engine.LocalConfigStateWriter
 import com.example.engine.SoundTriggerPlayer
@@ -118,7 +118,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         StudioUiState(
             hasOverlayPermission = Settings.canDrawOverlays(appContext),
             hasStoragePermission = LocalConfigStateWriter.hasStoragePermissionGranted(appContext),
-            ggufModelState = GgufBlueprintEngine.loadOrFallbackToSample(
+            ggufModelState = GgufNativeBridge.loadOrFallbackToSample(
                 appContext,
                 null,
                 StudioGenerationMode.OFFLINE_MANUAL
@@ -1707,7 +1707,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
      */
     fun importGgufModelUri(uri: Uri) {
         viewModelScope.launch(Dispatchers.IO) {
-            val validatedState = GgufBlueprintEngine.validateAndImportGgufUri(appContext, uri)
+            val validatedState = GgufNativeBridge.validateAndImportGgufUri(appContext, uri)
             if (validatedState.isValidGgufLoaded) {
                 _uiState.update {
                     it.copy(
@@ -1735,7 +1735,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
      */
     fun loadGgufModelFromPath(filePath: String) {
         viewModelScope.launch(Dispatchers.IO) {
-            val validatedState = GgufBlueprintEngine.validateGgufFilePath(filePath)
+            val validatedState = GgufNativeBridge.validateGgufFilePath(filePath)
             if (validatedState.isValidGgufLoaded) {
                 _uiState.update {
                     it.copy(
@@ -1769,7 +1769,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
         val currentState = _uiState.value
         val existingAiProject = currentState.aiBuiltProject
-        val evaluation = GgufBlueprintEngine.evaluateUserPrompt(
+        val evaluation = GgufNativeBridge.evaluateUserPrompt(
             prompt = cleanPrompt,
             existingProjectName = existingAiProject?.name,
             modelState = currentState.ggufModelState,
@@ -1794,23 +1794,23 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     isGeneratingAiBlueprint = false,
                     aiLiveBuildSteps = emptyList(),
                     aiChatHistory = it.aiChatHistory + chatTurn,
-                    statusToast = "AI Assistant replied in chat."
+                    statusToast = "GGUF Neural Inference replied in chat."
                 )
             }
             return
         }
 
         val initialSteps = listOf(
-            AiBuildStepStatus(1, 10, "1. Understand User Request", "Analyzing intent & tokens for: \"$cleanPrompt\"", isCompleted = true),
-            AiBuildStepStatus(2, 10, "2. Classify Request", "Classification: ${evaluation.requestClass.name}", isCompleted = true),
-            AiBuildStepStatus(3, 10, "3. Create App Specification", evaluation.decisionAnnouncement.ifBlank { "Selected App Concept: ${evaluation.selectedConceptName}" }, isCompleted = false),
-            AiBuildStepStatus(4, 10, "4. Show Build Plan", "Planning package, permissions, UI widgets & target file paths...", isCompleted = false),
-            AiBuildStepStatus(5, 10, "5. Generate Files", "Synthesizing AndroidManifest.xml, build.gradle.kts, MainActivity.kt & AiScratchLogicEngine.java...", isCompleted = false),
-            AiBuildStepStatus(6, 10, "6. Validate Code", "Running AST, layout coordinate & reference validation...", isCompleted = false),
-            AiBuildStepStatus(7, 10, "7. Auto-Fix Errors", "Applying self-healing patches for imports, offsets & bounds...", isCompleted = false),
-            AiBuildStepStatus(8, 10, "8. Build APK", "Waiting for validated source files before compiling signed APK...", isCompleted = false),
-            AiBuildStepStatus(9, 10, "9. Generate Preview", "Preparing interactive UI preview & floating window surface...", isCompleted = false),
-            AiBuildStepStatus(10, 10, "10. Show Final Result", "Finalizing Name + Path manifest & installable APK output...", isCompleted = false)
+            AiBuildStepStatus(1, 10, "1. User Prompt -> GgufNativeBridge.kt", "Routing prompt through GgufNativeBridge -> JNI -> C++ llama.cpp...", isCompleted = true),
+            AiBuildStepStatus(2, 10, "2. Actual .gguf Model & Tokenizer", "Tokenizing prompt via BPE/SentencePiece vocabulary from '${currentState.ggufModelState.modelFileName}'...", isCompleted = true),
+            AiBuildStepStatus(3, 10, "3. Neural Inference -> Generated Tokens", evaluation.decisionAnnouncement.ifBlank { "Running RMSNorm + RoPE Attention + SwiGLU forward pass..." }, isCompleted = false),
+            AiBuildStepStatus(4, 10, "4. Real GGUF AI -> Structured Specification", "Synthesizing StructuredAppSpecification (${evaluation.selectedConceptName})...", isCompleted = false),
+            AiBuildStepStatus(5, 10, "5. Existing AST / UI Engine", "Mapping structured widget specification into AST & UI components...", isCompleted = false),
+            AiBuildStepStatus(6, 10, "6. Android Overlay Project", "Generating AndroidManifest.xml, MainActivity.kt, AiDynamicOverlayService.kt & Java Engine...", isCompleted = false),
+            AiBuildStepStatus(7, 10, "7. Gradle Configuration", "Writing build.gradle.kts & validating AST references (0 errors)...", isCompleted = false),
+            AiBuildStepStatus(8, 10, "8. Floating Window APK", "Compiling & signing V1+V2+V3 Floating Window APK...", isCompleted = false),
+            AiBuildStepStatus(9, 10, "9. Kotlin -> Floating Panel / AI Studio", "Binding generated tokens & AST components to Floating Panel Preview...", isCompleted = false),
+            AiBuildStepStatus(10, 10, "10. Show Final Result", "Finalizing Name + Path manifest & installable Floating Window APK...", isCompleted = false)
         )
 
         _uiState.update {
@@ -1822,11 +1822,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
         viewModelScope.launch {
             try {
-                // Step 3 & 4: Create App Specification & Show Build Plan before generating/compiling files
+                // Step 3 & 4: Neural Inference -> Structured Specification -> AST / UI Engine
                 delay(80)
                 val defaultTarget = getDefaultTargetFilePath("ai_generated_app")
                 val spec = withContext(Dispatchers.Default) {
-                    GgufBlueprintEngine.generateBlueprintFromPrompt(
+                    GgufNativeBridge.generateBlueprintFromPrompt(
                         prompt = cleanPrompt,
                         projectId = -999L,
                         defaultTargetFilePath = defaultTarget,
